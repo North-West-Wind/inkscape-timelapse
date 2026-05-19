@@ -4,6 +4,13 @@ Inkscape timelapse capture daemon.
 Captures SVG frames from a running Inkscape instance via D-Bus at regular intervals.
 Records incremental diffs to a single timestamped JSON file.
 
+The D-Bus export actions always target the **focused** Inkscape window.
+To prevent recording the wrong document, the daemon injects a unique
+data-tlid attribute into every element of the document when recording starts.
+Before each capture, it verifies this marker is still present in the exported
+SVG. If the attribute is missing (e.g., the user switched to a different
+window), the recording is paused with a warning.
+
 Usage:
   timelapse_capture.py start --interval=5 --save-dir=/path
   timelapse_capture.py stop
@@ -13,10 +20,12 @@ Usage:
 import argparse
 import json
 import os
+import re
 import signal
 import sys
 import tempfile
 import time
+import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from difflib import unified_diff
 from pathlib import Path
@@ -30,9 +39,12 @@ STATE_DIR = Path.home() / ".inkscape-timelapse"
 STATE_FILE = STATE_DIR / "state.json"
 DBUS_DEST = "org.inkscape.Inkscape"
 DBUS_PATH = "/org/inkscape/Inkscape"
+TL_ATTR = "data-tlid"
 
 _loop_rec_path = None
 _loop_proxy = None
+
+_RE_TL_ATTR = re.compile(r'\s+data-tlid="[^"]*"')
 
 
 def main():
@@ -102,13 +114,13 @@ def _get_dbus_proxy():
     return bus.get_proxy(DBUS_DEST, DBUS_PATH)
 
 
-def _capture_svg():
+def _capture_svg(proxy):
+    """Export the currently focused document as plain SVG via D-Bus."""
     tmp = tempfile.NamedTemporaryFile(suffix=".svg", delete=False)
     tmp_path = tmp.name
     tmp.close()
 
     try:
-        proxy = _get_dbus_proxy()
         proxy.Activate("export-filename", [GLib.Variant("s", tmp_path)], {})
         proxy.Activate("export-plain-svg", [GLib.Variant("b", True)], {})
         proxy.Activate("export-do", [], {})
@@ -126,7 +138,49 @@ def _capture_svg():
             pass
 
 
+def _inject_marker(proxy, tlid):
+    """Add data-tlid=<tlid> to every element. Saves/restores user selection."""
+    try:
+        proxy.Activate("selection-set-backup", [], {})
+        proxy.Activate("select-all", [GLib.Variant("s", "all")], {})
+        proxy.Activate(
+            "object-set-attribute",
+            [GLib.Variant("s", f"{TL_ATTR},{tlid}")],
+            {},
+        )
+        proxy.Activate("selection-restore-backup", [], {})
+        return True
+    except Exception as exc:
+        print(f"Marker injection failed: {exc}", file=sys.stderr)
+        return False
+
+
+def _strip_marker(svg_text):
+    """Strip data-tlid marker attribute from plain SVG."""
+    return _RE_TL_ATTR.sub("", svg_text)
+
+
 # ── Commands ──────────────────────────────────────────────────────
+
+def _check_window_count():
+    bus = SessionMessageBus()
+    dbus_proxy = bus.get_proxy(
+        "org.freedesktop.DBus", "/org/freedesktop/DBus",
+    )
+    names = dbus_proxy.ListNames()
+    if "org.inkscape.Inkscape" not in names:
+        return 0
+
+    try:
+        window_proxy = bus.get_proxy(
+            "org.inkscape.Inkscape", "/org/inkscape/Inkscape/window",
+        )
+        xml_data = window_proxy.Introspect()
+        root = ET.fromstring(xml_data)
+        return sum(1 for child in root if child.tag == "node")
+    except Exception:
+        return 0
+
 
 def _cmd_start(interval, save_dir):
     save_dir = Path(save_dir or STATE_DIR).expanduser().resolve()
@@ -136,17 +190,52 @@ def _cmd_start(interval, save_dir):
         print("Recording already active. Stop it first.", file=sys.stderr)
         sys.exit(1)
 
-    svg_str = _capture_svg()
-    if not svg_str:
-        print("Failed to capture initial SVG. Is Inkscape running with an open document?",
-              file=sys.stderr)
+    win_count = _check_window_count()
+    if win_count == 0:
+        print("No Inkscape window detected on D-Bus.", file=sys.stderr)
         sys.exit(1)
+    elif win_count > 1:
+        print(
+            f"Warning: {win_count} Inkscape windows open. "
+            "Recording will be paused if focus switches to a different window.",
+            file=sys.stderr,
+        )
+
+    proxy = _get_dbus_proxy()
+    tlid = _recording_id()
+
+    # Inject marker into every element
+    if not _inject_marker(proxy, tlid):
+        print("Failed to inject recording marker.", file=sys.stderr)
+        sys.exit(1)
+
+    # Capture initial SVG (plain, marker survives)
+    svg_raw = _capture_svg(proxy)
+    if not svg_raw:
+        print(
+            "Failed to capture initial SVG. "
+            "Is Inkscape running with an open document?",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    # Check marker is present
+    if f'{TL_ATTR}="{tlid}"' not in svg_raw:
+        print(
+            "Recording marker not found in exported SVG. "
+            "Was the focused window switched before initial capture?",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    svg_clean = _strip_marker(svg_raw)
+    print(f"Recording document (marker: {tlid})")
 
     recording_id = _recording_id()
     rec_path = _recording_path(save_dir, recording_id)
 
     recording = {
-        "initial_svg": svg_str,
+        "initial_svg": svg_clean,
         "captures": [],
         STATE_KEY: {
             "status": "recording",
@@ -154,7 +243,8 @@ def _cmd_start(interval, save_dir):
             "interval": interval,
             "save_dir": str(save_dir),
             "recording_id": recording_id,
-            "last_svg": svg_str,
+            "last_svg": svg_clean,
+            "tlid": tlid,
         },
     }
     _write_recording(rec_path, recording)
@@ -197,9 +287,24 @@ def _capture_loop(rec_path):
                 interval = rec_state.get("interval", 5.0)
                 time.sleep(interval)
 
-                svg_str = _capture_svg_via_proxy()
-                if svg_str is None:
+                tlid = rec_state.get("tlid", "")
+
+                # Export (plain SVG — data-tlid marker survives the strip)
+                svg_raw = _capture_svg(_loop_proxy)
+                if not svg_raw:
                     continue
+
+                # Verify marker present. Injected once at startup on all elements.
+                # <g id="layer1"> always carries it. If missing → wrong window.
+                if f'{TL_ATTR}="{tlid}"' not in svg_raw:
+                    print(
+                        f"Marker missing — focus on wrong window. Waiting...",
+                        file=sys.stderr,
+                    )
+                    continue
+
+                # Strip marker attribute (rest is already clean plain SVG)
+                svg_str = _strip_marker(svg_raw)
 
                 previous_svg = rec_state["last_svg"]
                 if svg_str == previous_svg:
@@ -213,7 +318,9 @@ def _capture_loop(rec_path):
                 diff_text = "".join(diff_lines)
 
                 timestamp = datetime.now(timezone.utc).isoformat()
-                recording["captures"].append({"timestamp": timestamp, "diff": diff_text})
+                recording["captures"].append({
+                    "timestamp": timestamp, "diff": diff_text,
+                })
                 rec_state["last_svg"] = svg_str
                 _write_recording(rec_path, recording)
 
@@ -225,30 +332,6 @@ def _capture_loop(rec_path):
         print("\nStopped by user.")
     finally:
         _finalize(rec_path)
-
-
-def _capture_svg_via_proxy():
-    """Capture SVG using the cached D-Bus proxy."""
-    tmp = tempfile.NamedTemporaryFile(suffix=".svg", delete=False)
-    tmp_path = tmp.name
-    tmp.close()
-
-    try:
-        _loop_proxy.Activate("export-filename", [GLib.Variant("s", tmp_path)], {})
-        _loop_proxy.Activate("export-plain-svg", [GLib.Variant("b", True)], {})
-        _loop_proxy.Activate("export-do", [], {})
-
-        svg = Path(tmp_path).read_text(encoding="utf-8")
-        return svg if svg else None
-
-    except Exception as exc:
-        print(f"SVG capture failed: {exc}", file=sys.stderr)
-        return None
-    finally:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
 
 
 def _finalize(rec_path):
