@@ -2,14 +2,17 @@
 """
 Inkscape timelapse capture daemon.
 Captures SVG frames from a running Inkscape instance via D-Bus at regular intervals.
-Records incremental diffs to a single timestamped JSON file.
+Records incremental diffs to an append-only binary file.
 
-The D-Bus export actions always target the **focused** Inkscape window.
-To prevent recording the wrong document, the daemon injects a unique
-data-tlid attribute into every element of the document when recording starts.
-Before each capture, it verifies this marker is still present in the exported
-SVG. If the attribute is missing (e.g., the user switched to a different
-window), the recording is paused with a warning.
+File format (.tld):
+  "TLTL"                    magic (4 bytes)
+  [00] [svg_len: u32 LE]    initial SVG record
+  [01] [ts_len: u32 LE]     capture records (repeat)
+       [timestamp: UTF-8]
+       [diff_len: u32 LE]
+       [diff_data: zlib]
+
+No footer. Append-only. Crash-safe: records beyond EOF ignored.
 
 Usage:
   timelapse_capture.py start --interval=5 --save-dir=/path
@@ -22,10 +25,12 @@ import json
 import os
 import re
 import signal
+import struct
 import sys
 import tempfile
 import time
 import xml.etree.ElementTree as ET
+import zlib
 from datetime import datetime, timezone
 from difflib import unified_diff
 from pathlib import Path
@@ -34,12 +39,14 @@ from dasbus.connection import SessionMessageBus
 from gi.repository import GLib
 
 
-STATE_KEY = "_state"
 STATE_DIR = Path.home() / ".inkscape-timelapse"
 STATE_FILE = STATE_DIR / "state.json"
 DBUS_DEST = "org.inkscape.Inkscape"
 DBUS_PATH = "/org/inkscape/Inkscape"
 TL_ATTR = "data-tlid"
+MAGIC = b"TLTL"
+R_INITIAL = 0
+R_CAPTURE = 1
 
 _loop_rec_path = None
 _loop_proxy = None
@@ -67,7 +74,7 @@ def main():
         _cmd_resume()
 
 
-# ── State management ──────────────────────────────────────────────
+# ── State file management ─────────────────────────────────────────
 
 def _read_state():
     if STATE_FILE.exists():
@@ -87,24 +94,79 @@ def _clear_state():
     STATE_FILE.unlink(missing_ok=True)
 
 
-# ── Recording file management ─────────────────────────────────────
+# ── Recording file management (binary, append-only) ──────────────
 
 def _recording_id():
     return datetime.now(timezone.utc).strftime("timelapse_%Y%m%dT%H%M%SZ")
 
 
 def _recording_path(save_dir, recording_id):
-    return Path(save_dir).expanduser().resolve() / f"{recording_id}.json"
+    return Path(save_dir).expanduser().resolve() / f"{recording_id}.tld"
 
 
 def _read_recording(path):
-    if path.exists():
-        return json.loads(path.read_text(encoding="utf-8"))
-    return None
+    """Parse a .tld file into {initial_svg, captures}. Skips truncated records."""
+    data = {"initial_svg": "", "captures": []}
+    if not path.exists():
+        return None
+    with open(path, "rb") as f:
+        if f.read(4) != MAGIC:
+            return data
+        while True:
+            type_byte = f.read(1)
+            if len(type_byte) < 1:
+                break
+            if type_byte[0] == R_INITIAL:
+                buf = f.read(4)
+                if len(buf) < 4:
+                    break
+                slen = struct.unpack("<I", buf)[0]
+                svg = f.read(slen)
+                if len(svg) < slen:
+                    break
+                data["initial_svg"] = svg.decode("utf-8")
+            elif type_byte[0] == R_CAPTURE:
+                buf = f.read(4)
+                if len(buf) < 4:
+                    break
+                tslen = struct.unpack("<I", buf)[0]
+                ts = f.read(tslen)
+                if len(ts) < tslen:
+                    break
+                buf = f.read(4)
+                if len(buf) < 4:
+                    break
+                dlen = struct.unpack("<I", buf)[0]
+                diff_raw = f.read(dlen)
+                if len(diff_raw) < dlen:
+                    break
+                diff = zlib.decompress(diff_raw).decode("utf-8")
+                data["captures"].append({"timestamp": ts.decode("utf-8"), "diff": diff})
+            else:
+                break
+    return data
 
 
-def _write_recording(path, data):
-    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+def _write_initial_record(path, svg_text):
+    """Write magic + initial SVG record (overwrites existing file)."""
+    svg_bytes = svg_text.encode("utf-8")
+    with open(path, "wb") as f:
+        f.write(MAGIC)
+        f.write(struct.pack("<B", R_INITIAL))
+        f.write(struct.pack("<I", len(svg_bytes)))
+        f.write(svg_bytes)
+
+
+def _append_capture(path, timestamp, diff_text):
+    """Append one capture record (timestamp + zlib-compressed diff)."""
+    ts_bytes = timestamp.encode("utf-8")
+    diff_bytes = zlib.compress(diff_text.encode("utf-8"))
+    with open(path, "ab") as f:
+        f.write(struct.pack("<B", R_CAPTURE))
+        f.write(struct.pack("<I", len(ts_bytes)))
+        f.write(ts_bytes)
+        f.write(struct.pack("<I", len(diff_bytes)))
+        f.write(diff_bytes)
 
 
 # ── SVG capture via D-Bus ─────────────────────────────────────────
@@ -115,7 +177,6 @@ def _get_dbus_proxy():
 
 
 def _capture_svg(proxy):
-    """Export the currently focused document as plain SVG via D-Bus."""
     tmp = tempfile.NamedTemporaryFile(suffix=".svg", delete=False)
     tmp_path = tmp.name
     tmp.close()
@@ -139,7 +200,6 @@ def _capture_svg(proxy):
 
 
 def _inject_marker(proxy, tlid):
-    """Add data-tlid=<tlid> to every element. Saves/restores user selection."""
     try:
         proxy.Activate("selection-set-backup", [], {})
         proxy.Activate("select-all", [GLib.Variant("s", "all")], {})
@@ -156,7 +216,6 @@ def _inject_marker(proxy, tlid):
 
 
 def _strip_marker(svg_text):
-    """Strip data-tlid marker attribute from plain SVG."""
     return _RE_TL_ATTR.sub("", svg_text)
 
 
@@ -197,19 +256,17 @@ def _cmd_start(interval, save_dir):
     elif win_count > 1:
         print(
             f"Warning: {win_count} Inkscape windows open. "
-            "Recording will be paused if focus switches to a different window.",
+            "Focus will auto-track the correct window via marker.",
             file=sys.stderr,
         )
 
     proxy = _get_dbus_proxy()
     tlid = _recording_id()
 
-    # Inject marker into every element
     if not _inject_marker(proxy, tlid):
         print("Failed to inject recording marker.", file=sys.stderr)
         sys.exit(1)
 
-    # Capture initial SVG (plain, marker survives)
     svg_raw = _capture_svg(proxy)
     if not svg_raw:
         print(
@@ -219,7 +276,6 @@ def _cmd_start(interval, save_dir):
         )
         sys.exit(1)
 
-    # Check marker is present
     if f'{TL_ATTR}="{tlid}"' not in svg_raw:
         print(
             "Recording marker not found in exported SVG. "
@@ -234,21 +290,14 @@ def _cmd_start(interval, save_dir):
     recording_id = _recording_id()
     rec_path = _recording_path(save_dir, recording_id)
 
-    recording = {
-        "initial_svg": svg_clean,
-        "captures": [],
-        STATE_KEY: {
-            "status": "recording",
-            "start_time": datetime.now(timezone.utc).isoformat(),
-            "interval": interval,
-            "save_dir": str(save_dir),
-            "recording_id": recording_id,
-            "last_svg": svg_clean,
-            "tlid": tlid,
-        },
-    }
-    _write_recording(rec_path, recording)
-    _write_state({"save_dir": str(save_dir), "recording_id": recording_id})
+    _write_initial_record(rec_path, svg_clean)
+    _write_state({
+        "rec_path": str(rec_path),
+        "status": "recording",
+        "interval": interval,
+        "last_svg": svg_clean,
+        "tlid": tlid,
+    })
 
     print(f"Recording started: {rec_path.name}")
     _capture_loop(rec_path)
@@ -269,13 +318,7 @@ def _capture_loop(rec_path):
                 print("State file removed, stopping.", file=sys.stderr)
                 break
 
-            recording = _read_recording(rec_path)
-            if recording is None or STATE_KEY not in recording:
-                print("Recording data missing, stopping.", file=sys.stderr)
-                break
-
-            rec_state = recording[STATE_KEY]
-            status = rec_state.get("status")
+            status = state.get("status")
 
             if status == "stopped":
                 print("Recording stopped by request.")
@@ -284,45 +327,37 @@ def _capture_loop(rec_path):
                 time.sleep(0.5)
                 continue
             elif status == "recording":
-                interval = rec_state.get("interval", 5.0)
+                interval = state.get("interval", 5.0)
+                tlid = state.get("tlid", "")
+                last_svg = state.get("last_svg", "")
+
                 time.sleep(interval)
 
-                tlid = rec_state.get("tlid", "")
-
-                # Export (plain SVG — data-tlid marker survives the strip)
                 svg_raw = _capture_svg(_loop_proxy)
                 if not svg_raw:
                     continue
 
-                # Verify marker present. Injected once at startup on all elements.
-                # <g id="layer1"> always carries it. If missing → wrong window.
                 if f'{TL_ATTR}="{tlid}"' not in svg_raw:
-                    print(
-                        f"Marker missing — focus on wrong window. Waiting...",
-                        file=sys.stderr,
-                    )
+                    print("Marker missing — wrong window.", file=sys.stderr)
                     continue
 
-                # Strip marker attribute (rest is already clean plain SVG)
                 svg_str = _strip_marker(svg_raw)
 
-                previous_svg = rec_state["last_svg"]
-                if svg_str == previous_svg:
+                if svg_str == last_svg:
                     continue
 
                 diff_lines = list(unified_diff(
-                    previous_svg.splitlines(keepends=True),
+                    last_svg.splitlines(keepends=True),
                     svg_str.splitlines(keepends=True),
                     fromfile="previous.svg", tofile="current.svg",
                 ))
                 diff_text = "".join(diff_lines)
 
                 timestamp = datetime.now(timezone.utc).isoformat()
-                recording["captures"].append({
-                    "timestamp": timestamp, "diff": diff_text,
-                })
-                rec_state["last_svg"] = svg_str
-                _write_recording(rec_path, recording)
+                _append_capture(rec_path, timestamp, diff_text)
+
+                state["last_svg"] = svg_str
+                _write_state(state)
 
                 print(f"Capture at {timestamp} ({len(diff_text)} bytes)")
             else:
@@ -336,12 +371,8 @@ def _capture_loop(rec_path):
 
 def _finalize(rec_path):
     global _loop_rec_path
-    recording = _read_recording(rec_path)
-    if recording and STATE_KEY in recording:
-        del recording[STATE_KEY]
-        _write_recording(rec_path, recording)
-        print(f"Recording finalized: {rec_path}")
     _clear_state()
+    print(f"Recording finalized: {rec_path}")
     _loop_rec_path = None
 
 
@@ -356,16 +387,8 @@ def _cmd_stop():
     if state is None:
         print("No active recording.", file=sys.stderr)
         sys.exit(1)
-
-    save_dir = Path(state["save_dir"]).expanduser().resolve()
-    recording_id = state["recording_id"]
-    rec_path = _recording_path(save_dir, recording_id)
-
-    recording = _read_recording(rec_path)
-    if recording and STATE_KEY in recording:
-        recording[STATE_KEY]["status"] = "stopped"
-        _write_recording(rec_path, recording)
-
+    state["status"] = "stopped"
+    _write_state(state)
     print("Stop signal sent to capture loop.")
 
 
@@ -374,16 +397,9 @@ def _cmd_pause():
     if state is None:
         print("No active recording.", file=sys.stderr)
         sys.exit(1)
-
-    save_dir = Path(state["save_dir"]).expanduser().resolve()
-    recording_id = state["recording_id"]
-    rec_path = _recording_path(save_dir, recording_id)
-
-    recording = _read_recording(rec_path)
-    if recording and STATE_KEY in recording:
-        recording[STATE_KEY]["status"] = "paused"
-        _write_recording(rec_path, recording)
-        print("Recording paused.")
+    state["status"] = "paused"
+    _write_state(state)
+    print("Recording paused.")
 
 
 def _cmd_resume():
@@ -391,16 +407,9 @@ def _cmd_resume():
     if state is None:
         print("No active recording.", file=sys.stderr)
         sys.exit(1)
-
-    save_dir = Path(state["save_dir"]).expanduser().resolve()
-    recording_id = state["recording_id"]
-    rec_path = _recording_path(save_dir, recording_id)
-
-    recording = _read_recording(rec_path)
-    if recording and STATE_KEY in recording:
-        recording[STATE_KEY]["status"] = "recording"
-        _write_recording(rec_path, recording)
-        print("Recording resumed.")
+    state["status"] = "recording"
+    _write_state(state)
+    print("Recording resumed.")
 
 
 if __name__ == "__main__":

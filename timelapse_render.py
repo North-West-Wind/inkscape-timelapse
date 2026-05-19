@@ -2,41 +2,47 @@
 """
 Render a timelapse recording into a .webm video with transparency.
 
-Applies incremental diffs to reconstruct each SVG frame, renders each
-frame to PNG via Inkscape's pipe mode, and streams directly to ffmpeg.
-
 Usage:
-  timelapse_render.py recording.json --framerate=10 --output=timelapse.webm
+  timelapse_render.py recording.tld --framerate=10 --output=timelapse.webm
 """
 import argparse
-import json
-import re
+import struct
 import subprocess
 import sys
+import zlib
 from pathlib import Path
 
 
-HUNK_RE = re.compile(r"^@@ -(\d+),?(\d*) \+(\d+),?(\d*) @@")
-SKIP_RE = re.compile(r"^(---|\+\+\+)")
+MAGIC = b"TLTL"
+R_INITIAL = 0
+R_CAPTURE = 1
+
+
+def _read_exactly(f, n):
+    buf = f.read(n)
+    if len(buf) < n:
+        return None
+    return buf
 
 
 def apply_diff(original: str, diff_text: str) -> str:
-    """Apply a unified diff to *original* and return the result."""
     if not diff_text.strip():
         return original
-
     lines = list(original.splitlines(keepends=True))
     diff_lines = diff_text.splitlines(keepends=True)
 
-    # Parse hunks: (old_start, old_count, body_lines)
-    hunks: list[tuple[int, int, list[str]]] = []
+    import re
+    HUNK_RE = re.compile(r"^@@ -(\d+),?(\d*) \+(\d+),?(\d*) @@")
+    SKIP_RE = re.compile(r"^(---|\+\+\+)")
+
+    hunks = []
     i = 0
     while i < len(diff_lines):
         m = HUNK_RE.match(diff_lines[i])
         if m:
             old_start = int(m.group(1))
             old_count = int(m.group(2)) if m.group(2) else 1
-            body: list[str] = []
+            body = []
             i += 1
             while i < len(diff_lines) and not HUNK_RE.match(diff_lines[i]) and not SKIP_RE.match(diff_lines[i]):
                 body.append(diff_lines[i])
@@ -45,19 +51,15 @@ def apply_diff(original: str, diff_text: str) -> str:
         else:
             i += 1
 
-    # Apply hunks in reverse order so earlier line numbers stay valid
     for old_start, old_count, body in reversed(hunks):
         start_idx = max(0, old_start - 1)
-        new_content = [
-            hl[1:] for hl in body if not hl.startswith("-")
-        ]
-        lines[start_idx : start_idx + old_count] = new_content
+        new_content = [hl[1:] for hl in body if not hl.startswith("-")]
+        lines[start_idx: start_idx + old_count] = new_content
 
     return "".join(lines)
 
 
 def svg_to_png(svg_data: str) -> bytes:
-    """Render SVG string to PNG bytes via Inkscape pipe mode."""
     proc = subprocess.run(
         ["inkscape", "--pipe", "--export-type=png"],
         input=svg_data.encode("utf-8"),
@@ -69,27 +71,100 @@ def svg_to_png(svg_data: str) -> bytes:
     return proc.stdout
 
 
+def _frames(path: Path):
+    """Yield (svg, frame_number) reading .tld records sequentially (O(1) memory)."""
+    with open(path, "rb") as f:
+        if _read_exactly(f, 4) != MAGIC:
+            return
+
+        svg = None
+        frame = 0
+
+        while True:
+            type_byte = _read_exactly(f, 1)
+            if type_byte is None:
+                break
+
+            if type_byte[0] == R_INITIAL:
+                buf = _read_exactly(f, 4)
+                if buf is None:
+                    break
+                slen = struct.unpack("<I", buf)[0]
+                raw = _read_exactly(f, slen)
+                if raw is None:
+                    break
+                svg = raw.decode("utf-8")
+                yield svg, frame
+                frame += 1
+
+            elif type_byte[0] == R_CAPTURE:
+                buf = _read_exactly(f, 4)
+                if buf is None:
+                    break
+                _tslen = struct.unpack("<I", buf)[0]  # timestamp, unused during streaming
+                if _read_exactly(f, _tslen) is None:
+                    break
+
+                buf = _read_exactly(f, 4)
+                if buf is None:
+                    break
+                dlen = struct.unpack("<I", buf)[0]
+                diff_raw = _read_exactly(f, dlen)
+                if diff_raw is None:
+                    break
+
+                diff = zlib.decompress(diff_raw).decode("utf-8")
+                svg = apply_diff(svg, diff)
+                yield svg, frame
+                frame += 1
+
+            else:
+                break
+
+
+def _count_frames(path: Path) -> int:
+    """Count capture records (not initial SVG) by scanning the file."""
+    count = 0
+    with open(path, "rb") as f:
+        if _read_exactly(f, 4) != MAGIC:
+            return 0
+        while True:
+            type_byte = _read_exactly(f, 1)
+            if type_byte is None:
+                break
+            if type_byte[0] == R_INITIAL:
+                buf = _read_exactly(f, 4)
+                if buf is None:
+                    break
+                _read_exactly(f, struct.unpack("<I", buf)[0])
+            elif type_byte[0] == R_CAPTURE:
+                count += 1
+                buf = _read_exactly(f, 4)
+                if buf is None:
+                    break
+                _read_exactly(f, struct.unpack("<I", buf)[0])  # timestamp
+                buf = _read_exactly(f, 4)
+                if buf is None:
+                    break
+                _read_exactly(f, struct.unpack("<I", buf)[0])  # diff
+            else:
+                break
+    return count
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Render timelapse recording to .webm video"
     )
-    parser.add_argument("recording", type=str, help="Recording JSON file")
+    parser.add_argument("recording", type=str, help="Recording .tld file")
     parser.add_argument("--framerate", type=float, default=10.0,
                         help="Output video frame rate (default: 10)")
     parser.add_argument("--output", type=str, default="timelapse.webm",
                         help="Output video path (default: timelapse.webm)")
     args = parser.parse_args()
 
-    recording = json.loads(Path(args.recording).read_text(encoding="utf-8"))
-
-    # Reconstruct frame SVGs by applying diffs sequentially
-    svg = recording["initial_svg"]
-    frames = [svg]
-    for capture in recording["captures"]:
-        svg = apply_diff(svg, capture["diff"])
-        frames.append(svg)
-
-    total = len(frames)
+    path = Path(args.recording)
+    total = _count_frames(path) + 1  # +1 for initial SVG
     print(f"Rendering {total} frames at {args.framerate} fps → {args.output}")
 
     ffmpeg = subprocess.Popen(
@@ -108,12 +183,12 @@ def main() -> None:
     )
 
     try:
-        for i, frame_svg in enumerate(frames):
-            png_data = svg_to_png(frame_svg)
+        for svg, frame in _frames(path):
+            png_data = svg_to_png(svg)
             ffmpeg.stdin.write(png_data)
-            print(f"\r  Frame {i + 1}/{total}", end="", file=sys.stderr)
+            print(f"\r  Frame {frame + 1}/{total}", end="", file=sys.stderr)
     except BrokenPipeError:
-        pass  # ffmpeg may close early on error
+        pass
     finally:
         ffmpeg.stdin.close()
         ffmpeg.wait()
