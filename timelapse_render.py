@@ -260,6 +260,8 @@ def main():
                         help="SVG-to-PNG render engine (default: rsvg)")
     parser.add_argument("--workers", type=int, default=os.cpu_count(),
                         help="Parallel render workers (default: CPU count)")
+    parser.add_argument("--resolution", type=str, default=None,
+                        help="Explicit WxH resolution (overrides --resolution-policy)")
     args = parser.parse_args()
 
     path = Path(args.recording)
@@ -273,7 +275,14 @@ def main():
         sys.exit(1)
 
     policy = args.resolution_policy
-    if policy == "max":
+    if args.resolution:
+        try:
+            cw, ch = (int(x) for x in args.resolution.split("x", 1))
+        except (ValueError, IndexError):
+            print(f"Invalid --resolution: {args.resolution} (expected WxH)", file=sys.stderr)
+            sys.exit(1)
+        policy = f"{cw}x{ch}"
+    elif policy == "max":
         cw, ch = maw, mah
     elif policy == "min":
         cw, ch = miw, mih
