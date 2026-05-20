@@ -71,7 +71,7 @@ def svg_to_png(svg_data: str) -> bytes:
     return proc.stdout
 
 
-def _frames(path: Path):
+def _frames(path: Path, skip_unchanged=False):
     """Yield (svg, frame_number) reading .tld records sequentially (O(1) memory)."""
     with open(path, "rb") as f:
         if _read_exactly(f, 4) != MAGIC:
@@ -114,7 +114,10 @@ def _frames(path: Path):
                     break
 
                 diff = zlib.decompress(diff_raw).decode("utf-8")
-                svg = apply_diff(svg, diff)
+                if diff.strip():
+                    svg = apply_diff(svg, diff)
+                if not diff.strip() and skip_unchanged:
+                    continue  # skip unchanged frame entirely
                 yield svg, frame
                 frame += 1
 
@@ -161,11 +164,20 @@ def main() -> None:
                         help="Output video frame rate (default: 10)")
     parser.add_argument("--output", type=str, default="timelapse.webm",
                         help="Output video path (default: timelapse.webm)")
+    parser.add_argument("--skip-unchanged", action="store_true",
+                        help="Skip frames where document didn't change")
     args = parser.parse_args()
 
     path = Path(args.recording)
-    total = _count_frames(path) + 1  # +1 for initial SVG
-    print(f"Rendering {total} frames at {args.framerate} fps → {args.output}")
+    skip = args.skip_unchanged
+
+    if not skip:
+        total = _count_frames(path) + 1
+        label = str(total)
+    else:
+        total = None
+        label = "?"
+    print(f"Rendering {label} frames at {args.framerate} fps → {args.output}")
 
     ffmpeg = subprocess.Popen(
         [
@@ -183,10 +195,10 @@ def main() -> None:
     )
 
     try:
-        for svg, frame in _frames(path):
+        for svg, frame in _frames(path, skip_unchanged=skip):
             png_data = svg_to_png(svg)
             ffmpeg.stdin.write(png_data)
-            print(f"\r  Frame {frame + 1}/{total}", end="", file=sys.stderr)
+            print(f"\r  Frame {frame + 1}/{label}", end="", file=sys.stderr)
     except BrokenPipeError:
         pass
     finally:

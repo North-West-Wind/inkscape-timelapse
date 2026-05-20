@@ -18,8 +18,7 @@ from timelapse_capture import (
 class TimelapseTestCase(TestCase):
     def test_recording_id_format(self):
         rid = _recording_id()
-        self.assertTrue(rid.startswith("timelapse_"))
-        self.assertEqual(len(rid.split("_")), 2)
+        self.assertRegex(rid, r"^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}$")
 
     def test_recording_path(self):
         path = _recording_path(Path("/tmp"), "test_id")
