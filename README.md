@@ -51,6 +51,8 @@ via `inkscape --pipe`, and pipes directly to `ffmpeg`.
 | `--align-x` | `center` | Horizontal alignment: `left`, `center`, `right` |
 | `--align-y` | `center` | Vertical alignment: `top`, `center`, `bottom` |
 | `--stretch` | off | Stretch SVG to fill canvas (overrides alignment) |
+| `--engine` | `rsvg` | Render engine: `rsvg` (fast) or `inkscape` |
+| `--workers` | CPU count | Parallel render threads |
 
 Output codec: libvpx-vp9 with yuva420p (transparency).
 

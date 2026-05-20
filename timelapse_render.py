@@ -6,11 +6,16 @@ Usage:
   timelapse_render.py recording.tld --framerate=10 --output=timelapse.webm
 """
 import argparse
+import os
+import queue
 import re
 import struct
 import subprocess
 import sys
+import threading
+import time
 import zlib
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 
@@ -64,16 +69,27 @@ def apply_diff(original: str, diff_text: str) -> str:
     return "".join(lines)
 
 
-def svg_to_png(svg_data: str) -> bytes:
-    proc = subprocess.run(
-        ["inkscape", "--pipe", "--export-type=png"],
-        input=svg_data.encode("utf-8"),
-        capture_output=True,
-    )
-    if proc.returncode != 0:
-        msg = proc.stderr.decode("utf-8", errors="replace").strip()
-        raise RuntimeError(f"Inkscape failed: {msg}")
-    return proc.stdout
+def svg_to_png(svg_data: str, engine: str = "rsvg") -> bytes:
+    if engine == "rsvg":
+        proc = subprocess.run(
+            ["rsvg-convert", "--format", "png"],
+            input=svg_data.encode("utf-8"),
+            capture_output=True,
+        )
+        if proc.returncode != 0:
+            msg = proc.stderr.decode("utf-8", errors="replace").strip()
+            raise RuntimeError(f"rsvg-convert failed: {msg}")
+        return proc.stdout
+    else:
+        proc = subprocess.run(
+            ["inkscape", "--pipe", "--export-type=png"],
+            input=svg_data.encode("utf-8"),
+            capture_output=True,
+        )
+        if proc.returncode != 0:
+            msg = proc.stderr.decode("utf-8", errors="replace").strip()
+            raise RuntimeError(f"Inkscape failed: {msg}")
+        return proc.stdout
 
 
 def _svg_size(svg):
@@ -240,10 +256,16 @@ def main():
                         help="Vertical alignment of content on canvas (default: center)")
     parser.add_argument("--stretch", action="store_true",
                         help="Stretch SVG to fill canvas (overrides alignment)")
+    parser.add_argument("--engine", default="rsvg", choices=("rsvg", "inkscape"),
+                        help="SVG-to-PNG render engine (default: rsvg)")
+    parser.add_argument("--workers", type=int, default=os.cpu_count(),
+                        help="Parallel render workers (default: CPU count)")
     args = parser.parse_args()
 
     path = Path(args.recording)
     skip = args.skip_unchanged
+    engine = args.engine
+    workers = args.workers
 
     n, iw, ih, maw, mah, miw, mih = _analyze(path, skip_unchanged=skip)
     if n == 0:
@@ -268,31 +290,60 @@ def main():
             "ffmpeg", "-y",
             "-f", "image2pipe",
             "-framerate", str(args.framerate),
+            "-color_range", "full",
+            "-colorspace", "bt709",
+            "-color_trc", "iec61966-2-1",
+            "-color_primaries", "bt709",
             "-i", "-",
             "-c:v", "libvpx-vp9",
-            "-pix_fmt", "yuva420p",
             "-lossless", "1",
+            "-vf", "format=yuva420p",
+            "-color_range", "full",
+            "-colorspace", "bt709",
+            "-color_trc", "iec61966-2-1",
+            "-color_primaries", "bt709",
             args.output,
         ],
         stdin=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
     )
 
+    t_start = time.perf_counter()
     rendered = 0
+
     try:
-        for svg, _ in _frames(path, skip_unchanged=skip, canvas=canvas):
-            png = svg_to_png(svg)
-            ffmpeg.stdin.write(png)
-            rendered += 1
-            print(f"\r  Frame {rendered}/{total}", end="", file=sys.stderr)
-    except BrokenPipeError:
-        pass
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            pending = {}
+            next_out = 0
+
+            try:
+                for svg, frame in _frames(path, skip_unchanged=skip, canvas=canvas):
+                    pending[frame] = pool.submit(svg_to_png, svg, engine)
+
+                    while next_out in pending and pending[next_out].done():
+                        png = pending.pop(next_out).result()
+                        ffmpeg.stdin.write(png)
+                        rendered += 1
+                        print(f"\r  Frame {rendered}/{total}", end="", file=sys.stderr)
+                        next_out += 1
+
+                for frame in sorted(pending):
+                    png = pending[frame].result()
+                    ffmpeg.stdin.write(png)
+                    rendered += 1
+                    print(f"\r  Frame {rendered}/{total}", end="", file=sys.stderr)
+
+            except BrokenPipeError:
+                pass
     finally:
         ffmpeg.stdin.close()
         ffmpeg.wait()
 
-    print("\nDone" if ffmpeg.returncode == 0
-          else f"\nffmpeg exited with code {ffmpeg.returncode}",
-          file=sys.stderr)
+    elapsed = time.perf_counter() - t_start
+    fps = rendered / elapsed if elapsed else 0
+    print(f"\nDone  {rendered} frames in {elapsed:.1f}s ({fps:.1f} fps)", file=sys.stderr)
+    if ffmpeg.returncode != 0:
+        print(f"ffmpeg exited with code {ffmpeg.returncode}", file=sys.stderr)
 
 
 if __name__ == "__main__":
