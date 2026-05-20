@@ -6,6 +6,7 @@ Usage:
   timelapse_render.py recording.tld --framerate=10 --output=timelapse.webm
 """
 import argparse
+import re
 import struct
 import subprocess
 import sys
@@ -17,12 +18,17 @@ MAGIC = b"TLTL"
 R_INITIAL = 0
 R_CAPTURE = 1
 
+_W_RE = re.compile(r'width="(\d+(?:\.\d+)?)"')
+_H_RE = re.compile(r'height="(\d+(?:\.\d+)?)"')
+_PAR_RE = re.compile(r'\s*preserveAspectRatio="[^"]*"')
+
+_X_MAP = {"left": "Min", "center": "Mid", "right": "Max"}
+_Y_MAP = {"top": "Min", "center": "Mid", "bottom": "Max"}
+
 
 def _read_exactly(f, n):
     buf = f.read(n)
-    if len(buf) < n:
-        return None
-    return buf
+    return None if len(buf) < n else buf
 
 
 def apply_diff(original: str, diff_text: str) -> str:
@@ -31,7 +37,6 @@ def apply_diff(original: str, diff_text: str) -> str:
     lines = list(original.splitlines(keepends=True))
     diff_lines = diff_text.splitlines(keepends=True)
 
-    import re
     HUNK_RE = re.compile(r"^@@ -(\d+),?(\d*) \+(\d+),?(\d*) @@")
     SKIP_RE = re.compile(r"^(---|\+\+\+)")
 
@@ -71,8 +76,25 @@ def svg_to_png(svg_data: str) -> bytes:
     return proc.stdout
 
 
-def _frames(path: Path, skip_unchanged=False):
-    """Yield (svg, frame_number) reading .tld records sequentially (O(1) memory)."""
+def _svg_size(svg):
+    wm = _W_RE.search(svg)
+    hm = _H_RE.search(svg)
+    if wm and hm:
+        return int(float(wm.group(1))), int(float(hm.group(1)))
+    return None, None
+
+
+def _set_canvas(svg, w, h, align_x="center", align_y="center", stretch=False):
+    svg = _PAR_RE.sub("", svg)
+    svg = _W_RE.sub(f'width="{w}"', svg, count=1)
+    svg = _H_RE.sub(f'height="{h}"', svg, count=1)
+    par = "none" if stretch else f"x{_X_MAP[align_x]}Y{_Y_MAP[align_y]} meet"
+    svg = re.sub(r'(<svg[^>]*>)', f'\\1 preserveAspectRatio="{par}"', svg, count=1)
+    return svg
+
+
+def _frames(path, skip_unchanged=False, canvas=None):
+    """Yield (svg, frame_number). Optionally modify SVG canvas."""
     with open(path, "rb") as f:
         if _read_exactly(f, 4) != MAGIC:
             return
@@ -94,6 +116,8 @@ def _frames(path: Path, skip_unchanged=False):
                 if raw is None:
                     break
                 svg = raw.decode("utf-8")
+                if canvas:
+                    svg = _set_canvas(svg, *canvas)
                 yield svg, frame
                 frame += 1
 
@@ -101,7 +125,7 @@ def _frames(path: Path, skip_unchanged=False):
                 buf = _read_exactly(f, 4)
                 if buf is None:
                     break
-                _tslen = struct.unpack("<I", buf)[0]  # timestamp, unused during streaming
+                _tslen = struct.unpack("<I", buf)[0]
                 if _read_exactly(f, _tslen) is None:
                     break
 
@@ -117,7 +141,9 @@ def _frames(path: Path, skip_unchanged=False):
                 if diff.strip():
                     svg = apply_diff(svg, diff)
                 if not diff.strip() and skip_unchanged:
-                    continue  # skip unchanged frame entirely
+                    continue
+                if canvas:
+                    svg = _set_canvas(svg, *canvas)
                 yield svg, frame
                 frame += 1
 
@@ -125,37 +151,74 @@ def _frames(path: Path, skip_unchanged=False):
                 break
 
 
-def _count_frames(path: Path) -> int:
-    """Count capture records (not initial SVG) by scanning the file."""
-    count = 0
+def _analyze(path, skip_unchanged=False):
+    """Return (count, init_w, init_h, max_w, max_h, min_w, min_h).
+
+    Applies diffs sequentially. When *skip_unchanged*, empty diffs are
+    not counted (matching the frames actually yielded by _frames).
+    """
+    iw = ih = maw = mah = miw = mih = 0
+    n = 0
+
     with open(path, "rb") as f:
         if _read_exactly(f, 4) != MAGIC:
-            return 0
+            return 0, 0, 0, 0, 0, 0, 0
+
+        svg = None
+
         while True:
             type_byte = _read_exactly(f, 1)
             if type_byte is None:
                 break
+
             if type_byte[0] == R_INITIAL:
                 buf = _read_exactly(f, 4)
                 if buf is None:
                     break
-                _read_exactly(f, struct.unpack("<I", buf)[0])
+                slen = struct.unpack("<I", buf)[0]
+                raw = _read_exactly(f, slen)
+                if raw is None:
+                    break
+                svg = raw.decode("utf-8")
+                w, h = _svg_size(svg)
+                if w and h:
+                    iw = ih = maw = mah = miw = mih = w
+                    miw = mih = w
+                n += 1
+
             elif type_byte[0] == R_CAPTURE:
-                count += 1
                 buf = _read_exactly(f, 4)
                 if buf is None:
                     break
-                _read_exactly(f, struct.unpack("<I", buf)[0])  # timestamp
+                _read_exactly(f, struct.unpack("<I", buf)[0])
                 buf = _read_exactly(f, 4)
                 if buf is None:
                     break
-                _read_exactly(f, struct.unpack("<I", buf)[0])  # diff
+                dlen = struct.unpack("<I", buf)[0]
+                diff_raw = _read_exactly(f, dlen)
+                if diff_raw is None:
+                    break
+
+                diff = zlib.decompress(diff_raw).decode("utf-8")
+                if diff.strip():
+                    svg = apply_diff(svg, diff)
+                if not diff.strip() and skip_unchanged:
+                    continue
+                w, h = _svg_size(svg)
+                if w and h:
+                    maw = max(maw, w)
+                    mah = max(mah, h)
+                    miw = min(miw, w)
+                    mih = min(mih, h)
+                n += 1
+
             else:
                 break
-    return count
+
+    return n, iw, ih, maw, mah, miw, mih
 
 
-def main() -> None:
+def main():
     parser = argparse.ArgumentParser(
         description="Render timelapse recording to .webm video"
     )
@@ -166,18 +229,39 @@ def main() -> None:
                         help="Output video path (default: timelapse.webm)")
     parser.add_argument("--skip-unchanged", action="store_true",
                         help="Skip frames where document didn't change")
+    parser.add_argument("--resolution-policy", default="max",
+                        choices=("max", "min", "initial"),
+                        help="How to pick video resolution across frames with varying sizes (default: max)")
+    parser.add_argument("--align-x", default="center",
+                        choices=("left", "center", "right"),
+                        help="Horizontal alignment of content on canvas (default: center)")
+    parser.add_argument("--align-y", default="center",
+                        choices=("top", "center", "bottom"),
+                        help="Vertical alignment of content on canvas (default: center)")
+    parser.add_argument("--stretch", action="store_true",
+                        help="Stretch SVG to fill canvas (overrides alignment)")
     args = parser.parse_args()
 
     path = Path(args.recording)
     skip = args.skip_unchanged
 
-    if not skip:
-        total = _count_frames(path) + 1
-        label = str(total)
+    n, iw, ih, maw, mah, miw, mih = _analyze(path, skip_unchanged=skip)
+    if n == 0:
+        print("No frames found.", file=sys.stderr)
+        sys.exit(1)
+
+    policy = args.resolution_policy
+    if policy == "max":
+        cw, ch = maw, mah
+    elif policy == "min":
+        cw, ch = miw, mih
     else:
-        total = None
-        label = "?"
-    print(f"Rendering {label} frames at {args.framerate} fps → {args.output}")
+        cw, ch = iw, ih
+
+    canvas = (cw, ch, args.align_x, args.align_y, args.stretch)
+    total = n
+
+    print(f"Canvas: {cw}x{ch} ({policy}), {total} frames at {args.framerate} fps → {args.output}")
 
     ffmpeg = subprocess.Popen(
         [
@@ -191,14 +275,15 @@ def main() -> None:
             args.output,
         ],
         stdin=subprocess.PIPE,
-        stderr=subprocess.PIPE,
     )
 
+    rendered = 0
     try:
-        for svg, frame in _frames(path, skip_unchanged=skip):
-            png_data = svg_to_png(svg)
-            ffmpeg.stdin.write(png_data)
-            print(f"\r  Frame {frame + 1}/{label}", end="", file=sys.stderr)
+        for svg, _ in _frames(path, skip_unchanged=skip, canvas=canvas):
+            png = svg_to_png(svg)
+            ffmpeg.stdin.write(png)
+            rendered += 1
+            print(f"\r  Frame {rendered}/{total}", end="", file=sys.stderr)
     except BrokenPipeError:
         pass
     finally:

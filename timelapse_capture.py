@@ -98,51 +98,6 @@ def _append_capture(path, timestamp, diff_text):
         f.write(ts_bytes)
         f.write(struct.pack("<I", len(diff_bytes)))
         f.write(diff_bytes)
-
-
-def _read_recording(path):
-    """Parse a .tld file into {initial_svg, captures}. Skips truncated records."""
-    data = {"initial_svg": "", "captures": []}
-    if not path.exists():
-        return None
-    with open(path, "rb") as f:
-        if f.read(4) != MAGIC:
-            return data
-        while True:
-            type_byte = f.read(1)
-            if len(type_byte) < 1:
-                break
-            if type_byte[0] == R_INITIAL:
-                buf = f.read(4)
-                if len(buf) < 4:
-                    break
-                slen = struct.unpack("<I", buf)[0]
-                svg = f.read(slen)
-                if len(svg) < slen:
-                    break
-                data["initial_svg"] = svg.decode("utf-8")
-            elif type_byte[0] == R_CAPTURE:
-                buf = f.read(4)
-                if len(buf) < 4:
-                    break
-                tslen = struct.unpack("<I", buf)[0]
-                ts = f.read(tslen)
-                if len(ts) < tslen:
-                    break
-                buf = f.read(4)
-                if len(buf) < 4:
-                    break
-                dlen = struct.unpack("<I", buf)[0]
-                diff_raw = f.read(dlen)
-                if len(diff_raw) < dlen:
-                    break
-                diff = zlib.decompress(diff_raw).decode("utf-8")
-                data["captures"].append({"timestamp": ts.decode("utf-8"), "diff": diff})
-            else:
-                break
-    return data
-
-
 # ── SVG capture via D-Bus ─────────────────────────────────────────
 
 def _get_dbus_proxy():

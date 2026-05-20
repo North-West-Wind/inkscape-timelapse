@@ -47,6 +47,10 @@ via `inkscape --pipe`, and pipes directly to `ffmpeg`.
 | `--framerate` | `10` | Output video frame rate |
 | `--output` | `timelapse.webm` | Output video path |
 | `--skip-unchanged` | off | Skip frames where document didn't change |
+| `--resolution-policy` | `max` | Video sizing: `max`, `min`, `initial` |
+| `--align-x` | `center` | Horizontal alignment: `left`, `center`, `right` |
+| `--align-y` | `center` | Vertical alignment: `top`, `center`, `bottom` |
+| `--stretch` | off | Stretch SVG to fill canvas (overrides alignment) |
 
 Output codec: libvpx-vp9 with yuva420p (transparency).
 
