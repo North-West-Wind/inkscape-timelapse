@@ -1,9 +1,0 @@
-[project]
-name = "inkscape-timelapse"
-version = "0.1.0"
-description = "Capture timelapses from a running Inkscape instance via D-Bus, recording incremental SVG diffs"
-readme = "README.md"
-requires-python = ">=3.12"
-dependencies = [
-    "dasbus>=1.7",
-]

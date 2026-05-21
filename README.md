@@ -4,12 +4,14 @@ Capture timelapses from a running Inkscape instance via D-Bus. Records
 incremental SVG diffs to an append-only binary file. Render to .webm
 video with transparency.
 
+Single Go binary, no runtime dependencies.
+
 ## Usage
 
 ### Capture
 
 ```
-uv run timelapse_capture.py start --interval=5 --save-dir=./recordings
+inkscape-timelapse start --interval=5 --save-dir=./recordings
 ```
 
 Records the currently focused Inkscape document at regular intervals.
@@ -20,16 +22,17 @@ elements at startup to verify window identity before each capture.
 |------|---------|-------------|
 | `--interval` | `5` | Seconds between captures |
 | `--save-dir` | current dir | Recording output directory |
+| `--append` | — | Continue recording to an existing .tld file |
 | `--record-unchanged` | off | Record empty diffs when window unfocused |
-| `--time-format` | `%Y-%m-%dT%H:%M:%SZ` | strftime format for capture timestamps |
+| `--time-format` | `2006-01-02T15:04:05Z` | Go time format for capture timestamps |
 
 ```
-uv run timelapse_capture.py stop
+inkscape-timelapse stop
 ```
 
 To continue a previous recording:
 ```
-uv run timelapse_capture.py start --append recording.tld --interval=5
+inkscape-timelapse start --append recording.tld --interval=5
 ```
 
 All state is in-memory. If the process crashes, the incomplete recording
@@ -38,12 +41,12 @@ file is still renderable (truncated records at EOF are skipped).
 ### Render
 
 ```
-uv run timelapse_render.py recording.tld --framerate=10 --output=timelapse.webm
+inkscape-timelapse render recording.tld --framerate=10 --output=timelapse.webm
 ```
 
-Streams through the .tld file one record at a time (O(1) memory per frame).
 Reconstructs each SVG frame by applying incremental diffs, renders to PNG
-via `inkscape --pipe`, and pipes directly to `ffmpeg`.
+in parallel via `rsvg-convert` (default) or `inkscape --pipe`, and pipes
+directly to `ffmpeg`.
 
 | Flag | Default | Description |
 |------|---------|-------------|
@@ -51,32 +54,39 @@ via `inkscape --pipe`, and pipes directly to `ffmpeg`.
 | `--output` | `timelapse.webm` | Output video path |
 | `--skip-unchanged` | off | Skip frames where document didn't change |
 | `--resolution-policy` | `max` | Video sizing: `max`, `min`, `initial` |
+| `--resolution` | — | Explicit WxH (overrides --resolution-policy) |
 | `--align-x` | `center` | Horizontal alignment: `left`, `center`, `right` |
 | `--align-y` | `center` | Vertical alignment: `top`, `center`, `bottom` |
 | `--stretch` | off | Stretch SVG to fill canvas (overrides alignment) |
 | `--engine` | `rsvg` | Render engine: `rsvg` (fast) or `inkscape` |
-| `--workers` | CPU count | Parallel render threads |
+| `--workers` | CPU count | Parallel render workers |
 
 Output codec: libvpx-vp9 with yuva420p (transparency).
 
+### Inspect / Decode
+
+```
+inkscape-timelapse jsonl recording.tld     # JSONL to stdout
+inkscape-timelapse analyze recording.tld    # Frame count and resolution stats
+inkscape-timelapse extract recording.tld --frame=42 --output=frame.svg
+```
+
 ## .tld format
 
-Binary, append-only, no footer. Crash-safe: trailing truncated data is
-detected and ignored on read.
+Binary, append-only, no footer. Each record is independently deflated
+and length-prefixed, so truncated trailing data is safely ignored.
 
 ```
-MAGIC    4 bytes    "TLTL"
-```
+TLTL                     magic
 
-After magic: a raw deflate stream containing all records.
-Each record is a complete deflate block (`Z_SYNC_FLUSH` after every
-write), so the file is always readable up to the last complete block.
+[len:4] [deflated record]  ...
+```
 
 ### Initial SVG (type 0x00)
 
 ```
 [00]    1 byte     record type
-[slen]  4 bytes    SVG byte length (little-endian unsigned 32-bit)
+[slen]  4 bytes    SVG byte length (LE u32)
 [svg]   slen bytes UTF-8 encoded SVG
 ```
 
