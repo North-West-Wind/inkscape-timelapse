@@ -61,14 +61,16 @@ Output codec: libvpx-vp9 with yuva420p (transparency).
 
 ## .tld format
 
-Binary, append-only, no footer. Records past EOF are ignored on read
-(crash-safe).
+Binary, append-only, no footer. Crash-safe: trailing truncated data is
+detected and ignored on read.
 
 ```
 MAGIC    4 bytes    "TLTL"
 ```
 
-Two record types follow the magic:
+After magic: a raw deflate stream containing all records.
+Each record is a complete deflate block (`Z_SYNC_FLUSH` after every
+write), so the file is always readable up to the last complete block.
 
 ### Initial SVG (type 0x00)
 
@@ -85,7 +87,7 @@ Two record types follow the magic:
 [tlen]    4 bytes    timestamp byte length (LE u32)
 [ts]      tlen bytes UTF-8 timestamp
 [dlen]    4 bytes    diff byte length (LE u32)
-[diff]    dlen bytes zlib-compressed unified diff
+[diff]    dlen bytes unified diff (uncompressed)
 ```
 
 Empty diff = document unchanged at that timestamp (produced by

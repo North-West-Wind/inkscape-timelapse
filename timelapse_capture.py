@@ -42,6 +42,7 @@ _loop_proxy = None
 _RE_TL_ATTR = re.compile(r'\s+data-tlid="[^"]*"')
 _record_unchanged = False
 _time_fmt = "%Y-%m-%dT%H:%M:%SZ"
+_compressor = None
 
 
 def main():
@@ -78,65 +79,85 @@ def _recording_path(save_dir, recording_id):
 
 
 def _write_initial_record(path, svg_text):
+    global _compressor
     svg_bytes = svg_text.encode("utf-8")
+    record = struct.pack("<B", R_INITIAL) + struct.pack("<I", len(svg_bytes)) + svg_bytes
+    _compressor = zlib.compressobj(wbits=-15, level=6)
+    compressed = _compressor.compress(record) + _compressor.flush(zlib.Z_SYNC_FLUSH)
     with open(path, "wb") as f:
         f.write(MAGIC)
-        f.write(struct.pack("<B", R_INITIAL))
-        f.write(struct.pack("<I", len(svg_bytes)))
-        f.write(svg_bytes)
+        f.write(compressed)
 
 
 def _append_capture(path, timestamp, diff_text):
+    global _compressor
     ts_bytes = timestamp.encode("utf-8")
-    diff_bytes = zlib.compress(diff_text.encode("utf-8"))
+    diff_bytes = diff_text.encode("utf-8")
+    record = (struct.pack("<B", R_CAPTURE) + struct.pack("<I", len(ts_bytes))
+              + ts_bytes + struct.pack("<I", len(diff_bytes)) + diff_bytes)
+    compressed = _compressor.compress(record) + _compressor.flush(zlib.Z_SYNC_FLUSH)
     with open(path, "ab") as f:
-        f.write(struct.pack("<B", R_CAPTURE))
-        f.write(struct.pack("<I", len(ts_bytes)))
-        f.write(ts_bytes)
-        f.write(struct.pack("<I", len(diff_bytes)))
-        f.write(diff_bytes)
+        f.write(compressed)
+
+
+def _read_raw_records(path):
+    """Yield (type, raw_data) from a .tld file with continuous deflate.
+
+    Skips truncated trailing data on crash.
+    """
+    with open(path, "rb") as f:
+        if f.read(4) != MAGIC:
+            return
+        rest = f.read()
+    decomp = zlib.decompressobj(wbits=-15)
+    try:
+        raw = decomp.decompress(rest)
+        try:
+            raw += decomp.flush()
+        except zlib.error:
+            pass
+    except zlib.error:
+        raw = b""
+
+    i = 0
+    while i < len(raw):
+        if i + 5 > len(raw):
+            break
+        t = raw[i]
+        if t == R_INITIAL:
+            slen = struct.unpack("<I", raw[i+1:i+5])[0]
+            end = i + 5 + slen
+            if end > len(raw):
+                break
+            yield (t, raw[i+5:end].decode("utf-8"))
+            i = end
+        elif t == R_CAPTURE:
+            tslen = struct.unpack("<I", raw[i+1:i+5])[0]
+            if i + 5 + tslen + 4 > len(raw):
+                break
+            ts = raw[i+5:i+5+tslen].decode("utf-8")
+            dlen = struct.unpack("<I", raw[i+5+tslen:i+5+tslen+4])[0]
+            end = i + 5 + tslen + 4 + dlen
+            if end > len(raw):
+                break
+            diff = raw[i+5+tslen+4:end].decode("utf-8")
+            yield (t, {"timestamp": ts, "diff": diff})
+            i = end
+        else:
+            break
 
 
 def _reconstruct(path):
     """Return (initial_svg, last_svg, capture_count) from a .tld file."""
     initial = last = None
     count = 0
-    with open(path, "rb") as f:
-        if f.read(4) != MAGIC:
-            return None, None, 0
-        while True:
-            tb = f.read(1)
-            if len(tb) < 1:
-                break
-            if tb[0] == R_INITIAL:
-                buf = f.read(4)
-                if len(buf) < 4:
-                    break
-                slen = struct.unpack("<I", buf)[0]
-                raw = f.read(slen)
-                if len(raw) < slen:
-                    break
-                initial = last = raw.decode("utf-8")
-            elif tb[0] == R_CAPTURE:
-                count += 1
-                buf = f.read(4)
-                if len(buf) < 4:
-                    break
-                tslen = struct.unpack("<I", buf)[0]
-                if len(f.read(tslen)) < tslen:
-                    break
-                buf = f.read(4)
-                if len(buf) < 4:
-                    break
-                dlen = struct.unpack("<I", buf)[0]
-                diff_raw = f.read(dlen)
-                if len(diff_raw) < dlen:
-                    break
-                diff = zlib.decompress(diff_raw).decode("utf-8")
-                if diff.strip():
-                    last = _apply_diff(last, diff)
-            else:
-                break
+    for rec_type, data in _read_raw_records(path):
+        if rec_type == R_INITIAL:
+            initial = last = data
+        else:
+            count += 1
+            if data["diff"].strip():
+                last = _apply_diff(last, data["diff"])
     return initial, last, count
 
 
@@ -243,7 +264,7 @@ def _check_window_count():
 
 
 def _cmd_start(interval, save_dir, record_unchanged, time_fmt, append_path):
-    global _status, _interval, _tlid, _last_svg, _rec_path, _loop_proxy, _record_unchanged, _time_fmt
+    global _status, _interval, _tlid, _last_svg, _rec_path, _loop_proxy, _record_unchanged, _time_fmt, _compressor
 
     if _status != "stopped":
         print("Recording already active. Stop it first.", file=sys.stderr)
@@ -287,6 +308,7 @@ def _cmd_start(interval, save_dir, record_unchanged, time_fmt, append_path):
             print(f"Invalid or empty recording: {rec_path}", file=sys.stderr)
             sys.exit(1)
 
+        _compressor = zlib.compressobj(wbits=-15, level=6)
         _last_svg = last_svg
         _rec_path = rec_path
         print(f"Appending to {rec_path.name} ({count} existing captures)")
@@ -338,6 +360,10 @@ def _capture_loop():
 
                 svg_str = _clean_svg(svg_raw)
                 if svg_str == _last_svg:
+                    if _record_unchanged:
+                        ts = datetime.now(timezone.utc).strftime(_time_fmt)
+                        _append_capture(_rec_path, ts, "")
+                        print(f"Unchanged at {ts}")
                     continue
 
                 diff_lines = list(unified_diff(
@@ -361,7 +387,7 @@ def _capture_loop():
 
 
 def _finalize():
-    global _status, _rec_path, _loop_proxy, _last_svg, _tlid, _record_unchanged
+    global _status, _rec_path, _loop_proxy, _last_svg, _tlid, _record_unchanged, _compressor
     if _loop_proxy is not None and _rec_path is not None:
         _strip_marker(_loop_proxy)
         print(f"Recording finalized: {_rec_path}")
@@ -370,6 +396,7 @@ def _finalize():
     _loop_proxy = None
     _last_svg = ""
     _tlid = ""
+    _compressor = None
 
 
 def _signal_handler(signum, frame):

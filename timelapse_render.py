@@ -31,9 +31,48 @@ _X_MAP = {"left": "Min", "center": "Mid", "right": "Max"}
 _Y_MAP = {"top": "Min", "center": "Mid", "bottom": "Max"}
 
 
-def _read_exactly(f, n):
-    buf = f.read(n)
-    return None if len(buf) < n else buf
+def _read_raw_records(path):
+    """Yield (type, data) from a .tld file. Skips truncated trailing data."""
+    with open(path, "rb") as f:
+        if f.read(4) != MAGIC:
+            return
+        rest = f.read()
+    decomp = zlib.decompressobj(wbits=-15)
+    try:
+        raw = decomp.decompress(rest)
+        try:
+            raw += decomp.flush()
+        except zlib.error:
+            pass
+    except zlib.error:
+        raw = b""
+
+    i = 0
+    while i < len(raw):
+        if i + 5 > len(raw):
+            break
+        t = raw[i]
+        if t == R_INITIAL:
+            slen = struct.unpack("<I", raw[i+1:i+5])[0]
+            end = i + 5 + slen
+            if end > len(raw):
+                break
+            yield (t, raw[i+5:end].decode("utf-8"))
+            i = end
+        elif t == R_CAPTURE:
+            tslen = struct.unpack("<I", raw[i+1:i+5])[0]
+            if i + 5 + tslen + 4 > len(raw):
+                break
+            ts = raw[i+5:i+5+tslen].decode("utf-8")
+            dlen = struct.unpack("<I", raw[i+5+tslen:i+5+tslen+4])[0]
+            end = i + 5 + tslen + 4 + dlen
+            if end > len(raw):
+                break
+            diff = raw[i+5+tslen+4:end].decode("utf-8")
+            yield (t, {"timestamp": ts, "diff": diff})
+            i = end
+        else:
+            break
 
 
 def apply_diff(original: str, diff_text: str) -> str:
@@ -111,125 +150,52 @@ def _set_canvas(svg, w, h, align_x="center", align_y="center", stretch=False):
 
 def _frames(path, skip_unchanged=False, canvas=None):
     """Yield (svg, frame_number). Optionally modify SVG canvas."""
-    with open(path, "rb") as f:
-        if _read_exactly(f, 4) != MAGIC:
-            return
+    svg = None
+    frame = 0
 
-        svg = None
-        frame = 0
-
-        while True:
-            type_byte = _read_exactly(f, 1)
-            if type_byte is None:
-                break
-
-            if type_byte[0] == R_INITIAL:
-                buf = _read_exactly(f, 4)
-                if buf is None:
-                    break
-                slen = struct.unpack("<I", buf)[0]
-                raw = _read_exactly(f, slen)
-                if raw is None:
-                    break
-                svg = raw.decode("utf-8")
-                if canvas:
-                    svg = _set_canvas(svg, *canvas)
-                yield svg, frame
-                frame += 1
-
-            elif type_byte[0] == R_CAPTURE:
-                buf = _read_exactly(f, 4)
-                if buf is None:
-                    break
-                _tslen = struct.unpack("<I", buf)[0]
-                if _read_exactly(f, _tslen) is None:
-                    break
-
-                buf = _read_exactly(f, 4)
-                if buf is None:
-                    break
-                dlen = struct.unpack("<I", buf)[0]
-                diff_raw = _read_exactly(f, dlen)
-                if diff_raw is None:
-                    break
-
-                diff = zlib.decompress(diff_raw).decode("utf-8")
-                if diff.strip():
-                    svg = apply_diff(svg, diff)
-                if not diff.strip() and skip_unchanged:
-                    continue
-                if canvas:
-                    svg = _set_canvas(svg, *canvas)
-                yield svg, frame
-                frame += 1
-
-            else:
-                break
+    for rec_type, data in _read_raw_records(path):
+        if rec_type == R_INITIAL:
+            svg = data
+            if canvas:
+                svg = _set_canvas(svg, *canvas)
+            yield svg, frame
+            frame += 1
+        else:
+            if data["diff"].strip():
+                svg = apply_diff(svg, data["diff"])
+            if not data["diff"].strip() and skip_unchanged:
+                continue
+            if canvas:
+                svg = _set_canvas(svg, *canvas)
+            yield svg, frame
+            frame += 1
 
 
 def _analyze(path, skip_unchanged=False):
-    """Return (count, init_w, init_h, max_w, max_h, min_w, min_h).
-
-    Applies diffs sequentially. When *skip_unchanged*, empty diffs are
-    not counted (matching the frames actually yielded by _frames).
-    """
+    """Return (count, init_w, init_h, max_w, max_h, min_w, min_h)."""
     iw = ih = maw = mah = miw = mih = 0
     n = 0
+    svg = None
 
-    with open(path, "rb") as f:
-        if _read_exactly(f, 4) != MAGIC:
-            return 0, 0, 0, 0, 0, 0, 0
-
-        svg = None
-
-        while True:
-            type_byte = _read_exactly(f, 1)
-            if type_byte is None:
-                break
-
-            if type_byte[0] == R_INITIAL:
-                buf = _read_exactly(f, 4)
-                if buf is None:
-                    break
-                slen = struct.unpack("<I", buf)[0]
-                raw = _read_exactly(f, slen)
-                if raw is None:
-                    break
-                svg = raw.decode("utf-8")
-                w, h = _svg_size(svg)
-                if w and h:
-                    iw = ih = maw = mah = miw = mih = w
-                    miw = mih = w
-                n += 1
-
-            elif type_byte[0] == R_CAPTURE:
-                buf = _read_exactly(f, 4)
-                if buf is None:
-                    break
-                _read_exactly(f, struct.unpack("<I", buf)[0])
-                buf = _read_exactly(f, 4)
-                if buf is None:
-                    break
-                dlen = struct.unpack("<I", buf)[0]
-                diff_raw = _read_exactly(f, dlen)
-                if diff_raw is None:
-                    break
-
-                diff = zlib.decompress(diff_raw).decode("utf-8")
-                if diff.strip():
-                    svg = apply_diff(svg, diff)
-                if not diff.strip() and skip_unchanged:
-                    continue
-                w, h = _svg_size(svg)
-                if w and h:
-                    maw = max(maw, w)
-                    mah = max(mah, h)
-                    miw = min(miw, w)
-                    mih = min(mih, h)
-                n += 1
-
-            else:
-                break
+    for rec_type, data in _read_raw_records(path):
+        if rec_type == R_INITIAL:
+            svg = data
+            w, h = _svg_size(svg)
+            if w and h:
+                iw = ih = maw = mah = miw = mih = w
+            n += 1
+        else:
+            if data["diff"].strip():
+                svg = apply_diff(svg, data["diff"])
+            if not data["diff"].strip() and skip_unchanged:
+                continue
+            w, h = _svg_size(svg)
+            if w and h:
+                maw = max(maw, w)
+                mah = max(mah, h)
+                miw = min(miw, w)
+                mih = min(mih, h)
+            n += 1
 
     return n, iw, ih, maw, mah, miw, mih
 
