@@ -25,8 +25,11 @@ elements at startup to verify window identity before each capture.
 
 ```
 uv run timelapse_capture.py stop
-uv run timelapse_capture.py pause
-uv run timelapse_capture.py resume
+```
+
+To continue a previous recording:
+```
+uv run timelapse_capture.py start --append recording.tld --interval=5
 ```
 
 All state is in-memory. If the process crashes, the incomplete recording

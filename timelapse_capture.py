@@ -4,9 +4,8 @@ Inkscape timelapse capture daemon.
 
 Usage:
   timelapse_capture.py start --interval=5 --save-dir=/path
+  timelapse_capture.py start --append existing.tld --interval=5
   timelapse_capture.py stop
-  timelapse_capture.py pause
-  timelapse_capture.py resume
 """
 import argparse
 import os
@@ -33,7 +32,6 @@ MAGIC = b"TLTL"
 R_INITIAL = 0
 R_CAPTURE = 1
 
-# in-memory state
 _status = "stopped"
 _interval = 5.0
 _tlid = ""
@@ -48,7 +46,7 @@ _time_fmt = "%Y-%m-%dT%H:%M:%SZ"
 
 def main():
     parser = argparse.ArgumentParser(description="Inkscape timelapse capture daemon")
-    parser.add_argument("action", choices=("start", "stop", "pause", "resume"),
+    parser.add_argument("action", choices=("start", "stop"),
                         help="Action to perform")
     parser.add_argument("--interval", type=float, default=5.0,
                         help="Capture interval in seconds")
@@ -58,19 +56,18 @@ def main():
                         help="Record captures even when window unfocused (empty diff)")
     parser.add_argument("--time-format", type=str, default=_time_fmt,
                         help="strftime format for capture timestamps (default: %(default)s)")
+    parser.add_argument("--append", type=str, default=None,
+                        help="Continue recording to an existing .tld file")
     args = parser.parse_args()
 
     if args.action == "start":
-        _cmd_start(args.interval, args.save_dir, args.record_unchanged, args.time_format)
+        _cmd_start(args.interval, args.save_dir, args.record_unchanged,
+                   args.time_format, args.append)
     elif args.action == "stop":
         _cmd_stop()
-    elif args.action == "pause":
-        _cmd_pause()
-    elif args.action == "resume":
-        _cmd_resume()
 
 
-# ── Recording file management (binary, append-only) ──────────────
+# ── Recording file management ─────────────────────────────────────
 
 def _recording_id():
     return datetime.now(timezone.utc).strftime("%Y-%m-%d_%H-%M-%S")
@@ -98,6 +95,80 @@ def _append_capture(path, timestamp, diff_text):
         f.write(ts_bytes)
         f.write(struct.pack("<I", len(diff_bytes)))
         f.write(diff_bytes)
+
+
+def _reconstruct(path):
+    """Return (initial_svg, last_svg, capture_count) from a .tld file."""
+    initial = last = None
+    count = 0
+    with open(path, "rb") as f:
+        if f.read(4) != MAGIC:
+            return None, None, 0
+        while True:
+            tb = f.read(1)
+            if len(tb) < 1:
+                break
+            if tb[0] == R_INITIAL:
+                buf = f.read(4)
+                if len(buf) < 4:
+                    break
+                slen = struct.unpack("<I", buf)[0]
+                raw = f.read(slen)
+                if len(raw) < slen:
+                    break
+                initial = last = raw.decode("utf-8")
+            elif tb[0] == R_CAPTURE:
+                count += 1
+                buf = f.read(4)
+                if len(buf) < 4:
+                    break
+                tslen = struct.unpack("<I", buf)[0]
+                if len(f.read(tslen)) < tslen:
+                    break
+                buf = f.read(4)
+                if len(buf) < 4:
+                    break
+                dlen = struct.unpack("<I", buf)[0]
+                diff_raw = f.read(dlen)
+                if len(diff_raw) < dlen:
+                    break
+                diff = zlib.decompress(diff_raw).decode("utf-8")
+                if diff.strip():
+                    last = _apply_diff(last, diff)
+            else:
+                break
+    return initial, last, count
+
+
+def _apply_diff(original, diff_text):
+    if not diff_text.strip():
+        return original
+    lines = list(original.splitlines(keepends=True))
+    dl = diff_text.splitlines(keepends=True)
+    HUNK_RE = re.compile(r"^@@ -(\d+),?(\d*) \+(\d+),?(\d*) @@")
+    SKIP_RE = re.compile(r"^(---|\+\+\+)")
+    hunks = []
+    i = 0
+    while i < len(dl):
+        m = HUNK_RE.match(dl[i])
+        if m:
+            old_start = int(m.group(1))
+            old_count = int(m.group(2)) if m.group(2) else 1
+            body = []
+            i += 1
+            while i < len(dl) and not HUNK_RE.match(dl[i]) and not SKIP_RE.match(dl[i]):
+                body.append(dl[i])
+                i += 1
+            hunks.append((old_start, old_count, body))
+        else:
+            i += 1
+    for old_start, old_count, body in reversed(hunks):
+        start_idx = max(0, old_start - 1)
+        new_content = [hl[1:] for hl in body if not hl.startswith("-")]
+        lines[start_idx: start_idx + old_count] = new_content
+    return "".join(lines)
+
+
 # ── SVG capture via D-Bus ─────────────────────────────────────────
 
 def _get_dbus_proxy():
@@ -109,15 +180,12 @@ def _capture_svg(proxy):
     tmp = tempfile.NamedTemporaryFile(suffix=".svg", delete=False)
     tmp_path = tmp.name
     tmp.close()
-
     try:
         proxy.Activate("export-filename", [GLib.Variant("s", tmp_path)], {})
         proxy.Activate("export-plain-svg", [GLib.Variant("b", True)], {})
         proxy.Activate("export-do", [], {})
-
         svg = Path(tmp_path).read_text(encoding="utf-8")
         return svg if svg else None
-
     except Exception as exc:
         print(f"SVG capture failed: {exc}", file=sys.stderr)
         return None
@@ -142,7 +210,6 @@ def _inject_marker(proxy, tlid):
 
 
 def _strip_marker(proxy):
-    """Set data-tlid to empty string on all elements."""
     try:
         proxy.Activate("selection-set-backup", [], {})
         proxy.Activate("select-all", [GLib.Variant("s", "all")], {})
@@ -175,7 +242,7 @@ def _check_window_count():
         return 0
 
 
-def _cmd_start(interval, save_dir, record_unchanged, time_fmt):
+def _cmd_start(interval, save_dir, record_unchanged, time_fmt, append_path):
     global _status, _interval, _tlid, _last_svg, _rec_path, _loop_proxy, _record_unchanged, _time_fmt
 
     if _status != "stopped":
@@ -208,22 +275,37 @@ def _cmd_start(interval, save_dir, record_unchanged, time_fmt):
         sys.exit(1)
 
     svg_clean = _clean_svg(svg_raw)
-    save_path = (Path(save_dir) if save_dir else Path.cwd()).expanduser().resolve()
-    save_path.mkdir(parents=True, exist_ok=True)
-    rec_path = _recording_path(save_path, tlid)
 
-    _write_initial_record(rec_path, svg_clean)
+    if append_path:
+        rec_path = Path(append_path).expanduser().resolve()
+        if not rec_path.exists():
+            print(f"File not found: {rec_path}", file=sys.stderr)
+            sys.exit(1)
+
+        _, last_svg, count = _reconstruct(rec_path)
+        if last_svg is None:
+            print(f"Invalid or empty recording: {rec_path}", file=sys.stderr)
+            sys.exit(1)
+
+        _last_svg = last_svg
+        _rec_path = rec_path
+        print(f"Appending to {rec_path.name} ({count} existing captures)")
+    else:
+        save_path = (Path(save_dir) if save_dir else Path.cwd()).expanduser().resolve()
+        save_path.mkdir(parents=True, exist_ok=True)
+        rec_path = _recording_path(save_path, tlid)
+        _write_initial_record(rec_path, svg_clean)
+        _last_svg = svg_clean
+        _rec_path = rec_path
+        print(f"Recording started: {rec_path.name}")
 
     _status = "recording"
     _interval = interval
     _tlid = tlid
-    _last_svg = svg_clean
-    _rec_path = rec_path
     _loop_proxy = proxy
     _record_unchanged = record_unchanged
     _time_fmt = time_fmt
 
-    print(f"Recording started: {rec_path.name}")
     _capture_loop()
 
 
@@ -238,9 +320,6 @@ def _capture_loop():
             if _status == "stopped":
                 print("Recording stopped by request.")
                 break
-            elif _status == "paused":
-                time.sleep(0.5)
-                continue
             elif _status == "recording":
                 time.sleep(_interval)
 
@@ -285,7 +364,7 @@ def _finalize():
     global _status, _rec_path, _loop_proxy, _last_svg, _tlid, _record_unchanged
     if _loop_proxy is not None and _rec_path is not None:
         _strip_marker(_loop_proxy)
-    print(f"Recording finalized: {_rec_path}")
+        print(f"Recording finalized: {_rec_path}")
     _status = "stopped"
     _rec_path = None
     _loop_proxy = None
@@ -304,24 +383,7 @@ def _cmd_stop():
         print("No active recording.", file=sys.stderr)
         sys.exit(1)
     _status = "stopped"
-
-
-def _cmd_pause():
-    global _status
-    if _status == "stopped":
-        print("No active recording.", file=sys.stderr)
-        sys.exit(1)
-    _status = "paused"
-    print("Recording paused.")
-
-
-def _cmd_resume():
-    global _status
-    if _status == "stopped":
-        print("No active recording.", file=sys.stderr)
-        sys.exit(1)
-    _status = "recording"
-    print("Recording resumed.")
+    print("Stop signal sent to capture loop.")
 
 
 if __name__ == "__main__":
