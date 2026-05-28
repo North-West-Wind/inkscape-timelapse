@@ -19,14 +19,9 @@ func runJSONL(path string) {
 	enc.SetEscapeHTML(false)
 
 	for _, rec := range records {
-		var obj map[string]interface{}
-		if rec.Type == RInitial {
-			obj = map[string]interface{}{"initial_svg": rec.SVG}
-		} else {
-			obj = map[string]interface{}{
-				"timestamp": rec.TS,
-				"diff":      rec.Diff,
-			}
+		obj := map[string]interface{}{
+			"timestamp_ms": rec.TS,
+			"diff":         rec.Diff,
 		}
 		if err := enc.Encode(obj); err != nil {
 			fmt.Fprintf(os.Stderr, "JSON encode error: %v\n", err)
@@ -50,13 +45,9 @@ func runAnalyze(path string) {
 	totalNoEmpty := 0
 	svg := ""
 	for _, rec := range records {
-		if rec.Type == RInitial {
-			svg = rec.SVG
-		} else {
-			if isNonEmpty(rec.Diff) {
-				svg = ApplyDiff(svg, rec.Diff)
-				totalNoEmpty++
-			}
+		if isNonEmpty(rec.Diff) {
+			svg = ApplyDiff(svg, rec.Diff)
+			totalNoEmpty++
 		}
 	}
 
@@ -81,14 +72,9 @@ func runExtract(path string, frame int, output string) {
 	svg := ""
 	current := 0
 	for _, rec := range records {
-		if rec.Type == RInitial {
-			svg = rec.SVG
-		} else {
-			if isNonEmpty(rec.Diff) {
-				svg = ApplyDiff(svg, rec.Diff)
-			}
+		if isNonEmpty(rec.Diff) {
+			svg = ApplyDiff(svg, rec.Diff)
 		}
-
 		if current == frame {
 			if output != "" {
 				if err := os.WriteFile(output, []byte(svg), 0644); err != nil {

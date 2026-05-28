@@ -10,16 +10,10 @@ import (
 	"sync"
 )
 
-const (
-	Magic    = "TLTL"
-	RInitial = 0
-	RCapture = 1
-)
+const Magic = "TLTL"
 
 type Record struct {
-	Type int
-	SVG  string
-	TS   string
+	TS   uint64
 	Diff string
 }
 
@@ -28,7 +22,7 @@ type Record struct {
 type TLDWriter struct {
 	mu        sync.Mutex
 	f         *os.File
-	syncCount int // periodic fsync every N writes
+	syncCount int
 }
 
 func CreateTLD(path string) (*TLDWriter, error) {
@@ -43,56 +37,35 @@ func CreateTLD(path string) (*TLDWriter, error) {
 	return &TLDWriter{f: f}, nil
 }
 
-func OpenTLDAppend(path string) (*TLDWriter, string, int, error) {
-	lastSVG, count, err := ReconstructSVG(path)
+func OpenTLDAppend(path string) (*TLDWriter, string, int, int, error) {
+	lastSVG, count, bytes, err := ReconstructSVG(path)
 	if err != nil {
-		return nil, "", 0, fmt.Errorf("reconstruct %s: %w", path, err)
-	}
-	if lastSVG == "" {
-		return nil, "", 0, fmt.Errorf("empty recording: %s", path)
+		return nil, "", 0, 0, fmt.Errorf("reconstruct %s: %w", path, err)
 	}
 
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
-		return nil, "", 0, err
+		return nil, "", 0, 0, err
 	}
-	return &TLDWriter{f: f}, lastSVG, count, nil
+	return &TLDWriter{f: f}, lastSVG, count, bytes, nil
 }
 
-func (tw *TLDWriter) WriteInitial(svg string) error {
+func (tw *TLDWriter) WriteCapture(ts uint64, diff string) error {
 	tw.mu.Lock()
 	defer tw.mu.Unlock()
-	svgB := []byte(svg)
-	payload := make([]byte, 4+len(svgB))
-	binary.LittleEndian.PutUint32(payload[0:4], uint32(len(svgB)))
-	copy(payload[4:], svgB)
-	return tw.writeCompressed(RInitial, payload)
-}
 
-func (tw *TLDWriter) WriteCapture(ts, diff string) error {
-	tw.mu.Lock()
-	defer tw.mu.Unlock()
-	tsB := []byte(ts)
 	diffB := []byte(diff)
-	payload := make([]byte, 4+len(tsB)+4+len(diffB))
-	binary.LittleEndian.PutUint32(payload[0:4], uint32(len(tsB)))
-	copy(payload[4:], tsB)
-	binary.LittleEndian.PutUint32(payload[4+len(tsB):4+len(tsB)+4], uint32(len(diffB)))
-	copy(payload[4+len(tsB)+4:], diffB)
-	return tw.writeCompressed(RCapture, payload)
-}
-
-func (tw *TLDWriter) writeCompressed(typ int, payload []byte) error {
-	raw := make([]byte, 1+len(payload))
-	raw[0] = byte(typ)
-	copy(raw[1:], payload)
+	payload := make([]byte, 8+4+len(diffB))
+	binary.LittleEndian.PutUint64(payload[0:8], ts)
+	binary.LittleEndian.PutUint32(payload[8:12], uint32(len(diffB)))
+	copy(payload[12:], diffB)
 
 	buf := &bytes.Buffer{}
 	w, err := flate.NewWriter(buf, flate.DefaultCompression)
 	if err != nil {
 		return err
 	}
-	if _, err := w.Write(raw); err != nil {
+	if _, err := w.Write(payload); err != nil {
 		return err
 	}
 	if err := w.Close(); err != nil {
@@ -133,10 +106,10 @@ func ReadRecords(path string) ([]Record, error) {
 	if len(data) < 4 || string(data[:4]) != Magic {
 		return nil, fmt.Errorf("invalid .tld magic")
 	}
-	return readLengthPrefixed(data[4:])
+	return readRecords(data[4:])
 }
 
-func readLengthPrefixed(body []byte) ([]Record, error) {
+func readRecords(body []byte) ([]Record, error) {
 	offset := 0
 	var records []Record
 
@@ -155,10 +128,16 @@ func readLengthPrefixed(body []byte) ([]Record, error) {
 		if err != nil && len(raw) == 0 {
 			break
 		}
-		if len(raw) == 0 {
+		if len(raw) < 12 {
 			break
 		}
-		records = append(records, parseRaw(raw)...)
+		ts := binary.LittleEndian.Uint64(raw[0:8])
+		dlen := int(binary.LittleEndian.Uint32(raw[8:12]))
+		if 12+dlen > len(raw) {
+			break
+		}
+		diff := string(raw[12 : 12+dlen])
+		records = append(records, Record{TS: ts, Diff: diff})
 		offset += recLen
 	}
 
@@ -168,60 +147,20 @@ func readLengthPrefixed(body []byte) ([]Record, error) {
 	return records, nil
 }
 
-func parseRaw(raw []byte) []Record {
-	var records []Record
-	i := 0
-	for i < len(raw) {
-		if i+5 > len(raw) {
-			break
-		}
-		t := int(raw[i])
-		if t == RInitial {
-			slen := int(binary.LittleEndian.Uint32(raw[i+1 : i+5]))
-			end := i + 5 + slen
-			if end > len(raw) {
-				break
-			}
-			records = append(records, Record{Type: RInitial, SVG: string(raw[i+5 : end])})
-			i = end
-		} else if t == RCapture {
-			tslen := int(binary.LittleEndian.Uint32(raw[i+1 : i+5]))
-			if i+5+tslen+4 > len(raw) {
-				break
-			}
-			ts := string(raw[i+5 : i+5+tslen])
-			dlen := int(binary.LittleEndian.Uint32(raw[i+5+tslen : i+5+tslen+4]))
-			end := i + 5 + tslen + 4 + dlen
-			if end > len(raw) {
-				break
-			}
-			diff := string(raw[i+5+tslen+4 : end])
-			records = append(records, Record{Type: RCapture, TS: ts, Diff: diff})
-			i = end
-		} else {
-			break
-		}
-	}
-	return records
-}
-
 // ── Reconstruction (for --append) ─────────────────────────────────
 
-func ReconstructSVG(path string) (lastSVG string, captures int, err error) {
+func ReconstructSVG(path string) (lastSVG string, captures int, totalBytes int, err error) {
 	records, err := ReadRecords(path)
 	if err != nil {
-		return "", 0, err
+		return "", 0, 0, err
 	}
 	var svg string
 	for _, rec := range records {
-		if rec.Type == RInitial {
-			svg = rec.SVG
-		} else {
-			captures++
-			if isNonEmpty(rec.Diff) {
-				svg = ApplyDiff(svg, rec.Diff)
-			}
+		captures++
+		totalBytes += len(rec.Diff)
+		if isNonEmpty(rec.Diff) {
+			svg = ApplyDiff(svg, rec.Diff)
 		}
 	}
-	return svg, captures, nil
+	return svg, captures, totalBytes, nil
 }

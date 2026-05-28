@@ -103,22 +103,20 @@ func analyzeRecords(records []Record, skipUnchanged bool) analysis {
 	var svg string
 
 	for _, rec := range records {
-		if rec.Type == RInitial {
-			svg = rec.SVG
+		if isNonEmpty(rec.Diff) {
+			svg = ApplyDiff(svg, rec.Diff)
+		}
+		if !isNonEmpty(rec.Diff) && skipUnchanged {
+			continue
+		}
+		if a.count == 0 {
 			w, h := svgSize(svg)
 			if w > 0 && h > 0 {
 				a.initW, a.initH = w, h
 				a.maxW, a.maxH = w, h
 				a.minW, a.minH = w, h
 			}
-			a.count++
 		} else {
-			if isNonEmpty(rec.Diff) {
-				svg = ApplyDiff(svg, rec.Diff)
-			}
-			if !isNonEmpty(rec.Diff) && skipUnchanged {
-				continue
-			}
 			w, h := svgSize(svg)
 			if w > 0 && h > 0 {
 				if w > a.maxW {
@@ -134,8 +132,8 @@ func analyzeRecords(records []Record, skipUnchanged bool) analysis {
 					a.minH = h
 				}
 			}
-			a.count++
 		}
+		a.count++
 	}
 	return a
 }
@@ -261,20 +259,13 @@ func renderToFFmpeg(
 		num := 0
 		svg := ""
 		for _, rec := range records {
-			var frameSVG string
-			if rec.Type == RInitial {
-				frameSVG = rec.SVG
-				svg = rec.SVG
-			} else {
-				if isNonEmpty(rec.Diff) {
-					svg = ApplyDiff(svg, rec.Diff)
-				}
-				if !isNonEmpty(rec.Diff) && skipUnchanged {
-					continue
-				}
-				frameSVG = svg
+			if isNonEmpty(rec.Diff) {
+				svg = ApplyDiff(svg, rec.Diff)
 			}
-			jobs <- frameJob{num: num, svg: frameSVG}
+			if !isNonEmpty(rec.Diff) && skipUnchanged {
+				continue
+			}
+			jobs <- frameJob{num: num, svg: svg}
 			num++
 		}
 	}()

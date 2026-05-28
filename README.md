@@ -78,26 +78,17 @@ TLTL                     magic
 [len:4] [deflated record]  ...
 ```
 
-### Initial SVG (type 0x00)
+### Record
 
 ```
-[00]    1 byte     record type
-[slen]  4 bytes    SVG byte length (LE u32)
-[svg]   slen bytes UTF-8 encoded SVG
-```
-
-### Capture (type 0x01)
-
-```
-[01]      1 byte     record type
-[tlen]    4 bytes    timestamp byte length (LE u32)
-[ts]      tlen bytes UTF-8 timestamp
-[dlen]    4 bytes    diff byte length (LE u32)
-[diff]    dlen bytes unified diff (uncompressed)
+[ts:8]     uint64 LE     Unix epoch milliseconds
+[dlen:4]   uint32 LE     diff byte length
+[diff]     dlen bytes    unified diff (uncompressed)
 ```
 
 Empty diff = document unchanged at that timestamp (produced by
-`--record-unchanged`).
+`--record-unchanged`). The first record's diff is from an empty SVG
+to the initial document state — effectively the full initial SVG.
 
 ## Disclaimer
 

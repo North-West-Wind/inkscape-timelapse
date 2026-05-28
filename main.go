@@ -66,8 +66,6 @@ func extractPosArg(args []string, fs *flag.FlagSet) (string, []string) {
 	return "", args
 }
 
-const defaultTimeFmt = "2006-01-02T15:04:05Z"
-
 func main() {
 	if len(os.Args) < 2 {
 		usage()
@@ -111,7 +109,6 @@ Run '%[1]s <command> --help' for command-specific flags.
 type recordFlags struct {
 	interval        time.Duration
 	saveDir         string
-	timeFmt         string
 	appendPath      string
 	recordUnchanged bool
 }
@@ -120,7 +117,6 @@ func cmdRecord(args []string) {
 	fs := newFlagSet("record")
 	interval := fs.Float64("interval", 5.0, "Capture interval in seconds")
 	saveDir := fs.String("save-dir", "", "Recording save directory")
-	timeFmt := fs.String("time-format", defaultTimeFmt, "Go time format for capture timestamps (default: ISO 8601)")
 	appendPath := fs.String("append", "", "Continue recording to an existing .tld file")
 	recordUnchanged := fs.Bool("record-unchanged", false, "Record captures even when window unfocused (empty diff)")
 	fs.Parse(args)
@@ -128,7 +124,6 @@ func cmdRecord(args []string) {
 	recordCapture(recordFlags{
 		interval:        time.Duration(*interval * float64(time.Second)),
 		saveDir:         *saveDir,
-		timeFmt:         *timeFmt,
 		appendPath:      *appendPath,
 		recordUnchanged: *recordUnchanged,
 	})

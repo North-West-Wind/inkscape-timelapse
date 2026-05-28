@@ -161,22 +161,23 @@ func recordCapture(f recordFlags) {
 		os.Exit(1)
 	}
 
-	svg := cleanSVG(svgRaw)
-
 	var tw *TLDWriter
-	lastSVG := svg
+	lastSVG := ""
 	var recPath string
+	totalBytes := 0
 
 	if f.appendPath != "" {
 		p := f.appendPath
 		var captures int
+		var prevBytes int
 		var err error
-		tw, lastSVG, captures, err = OpenTLDAppend(p)
+		tw, lastSVG, captures, prevBytes, err = OpenTLDAppend(p)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Failed to open recording for append: %v\n", err)
 			os.Exit(1)
 		}
 		recPath = p
+		totalBytes = prevBytes
 		fmt.Printf("Appending to %s (%d existing captures)\n", filepath.Base(recPath), captures)
 	} else {
 		savePath := f.saveDir
@@ -198,11 +199,6 @@ func recordCapture(f recordFlags) {
 			fmt.Fprintf(os.Stderr, "Failed to create recording: %v\n", err)
 			os.Exit(1)
 		}
-		if err := tw.WriteInitial(svg); err != nil {
-			tw.Close()
-			fmt.Fprintf(os.Stderr, "Failed to write initial record: %v\n", err)
-			os.Exit(1)
-		}
 		fmt.Printf("Recording started: %s\n", filepath.Base(recPath))
 	}
 	defer tw.Close()
@@ -213,6 +209,8 @@ func recordCapture(f recordFlags) {
 
 	fmt.Println("Recording (Ctrl+C to stop)...")
 
+	var lastChangeUnix int64
+
 	for {
 		select {
 		case <-sigCh:
@@ -222,7 +220,7 @@ func recordCapture(f recordFlags) {
 		}
 
 		tStart := time.Now()
-		captureTick(conn, tw, tlid, &lastSVG, f, recPath)
+		captureTick(conn, tw, tlid, &lastSVG, f, &lastChangeUnix, &totalBytes)
 		elapsed := time.Since(tStart)
 
 		if sleep := f.interval - elapsed; sleep > 0 {
@@ -238,7 +236,7 @@ func recordCapture(f recordFlags) {
 	}
 }
 
-func captureTick(conn *dbus.Conn, tw *TLDWriter, tlid string, lastSVG *string, f recordFlags, recPath string) {
+func captureTick(conn *dbus.Conn, tw *TLDWriter, tlid string, lastSVG *string, f recordFlags, lastChangeUnix *int64, totalBytes *int) {
 	svgRaw, err := captureSVG(conn)
 	if err != nil || svgRaw == "" {
 		return
@@ -246,34 +244,48 @@ func captureTick(conn *dbus.Conn, tw *TLDWriter, tlid string, lastSVG *string, f
 
 	marker := fmt.Sprintf(`%s="%s"`, tlAttr, tlid)
 	if !strings.Contains(svgRaw, marker) {
-		if f.recordUnchanged {
-			ts := time.Now().UTC().Format(f.timeFmt)
-			tw.WriteCapture(ts, "")
-			fmt.Printf("Unchanged at %s\n", ts)
+		if !f.recordUnchanged {
 			return
 		}
-		fmt.Fprintln(os.Stderr, "Marker missing — wrong window.")
+		ts := uint64(time.Now().UnixMilli())
+		tw.WriteCapture(ts, "")
+		printStatus(ts, *lastChangeUnix, *totalBytes)
 		return
 	}
 
 	svgStr := cleanSVG(svgRaw)
-	if svgStr == *lastSVG {
-		if f.recordUnchanged {
-			ts := time.Now().UTC().Format(f.timeFmt)
-			tw.WriteCapture(ts, "")
-			fmt.Printf("Unchanged at %s\n", ts)
-		}
+	if svgStr == *lastSVG && !f.recordUnchanged {
 		return
 	}
 
-	diffText := generateDiff(*lastSVG, svgStr)
-	timestamp := time.Now().UTC().Format(f.timeFmt)
-	if err := tw.WriteCapture(timestamp, diffText); err != nil {
-		fmt.Fprintf(os.Stderr, "Write capture failed: %v\n", err)
+	diffText := ""
+	if svgStr != *lastSVG {
+		diffText = generateDiff(*lastSVG, svgStr)
+	}
+
+	ts := uint64(time.Now().UnixMilli())
+	if err := tw.WriteCapture(ts, diffText); err != nil {
+		fmt.Fprintf(os.Stderr, "\nWrite capture failed: %v\n", err)
 		return
 	}
-	*lastSVG = svgStr
-	fmt.Printf("Capture at %s (%d bytes)\n", timestamp, len(diffText))
+	*totalBytes += len(diffText)
+	if isNonEmpty(diffText) {
+		*lastChangeUnix = int64(ts)
+		*lastSVG = svgStr
+	}
+	printStatus(ts, *lastChangeUnix, *totalBytes)
+}
+
+func printStatus(ts uint64, lastChangeUnix int64, totalBytes int) {
+	t := time.UnixMilli(int64(ts))
+	if lastChangeUnix > 0 {
+		delta := time.Since(time.UnixMilli(lastChangeUnix))
+		fmt.Printf("\r[%s] last change: %+.1fs  %d bytes  ",
+			t.Format("15:04:05.000"), delta.Seconds(), totalBytes)
+	} else {
+		fmt.Printf("\r[%s] no changes yet  %d bytes  ",
+			t.Format("15:04:05.000"), totalBytes)
+	}
 }
 
 // ── Helpers ───────────────────────────────────────────────────────
