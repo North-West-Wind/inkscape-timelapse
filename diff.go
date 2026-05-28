@@ -1,38 +1,28 @@
 package main
 
 import (
-	"os"
-	"os/exec"
-	"path/filepath"
+	"fmt"
 	"regexp"
 	"strings"
+
+	"github.com/hexops/gotextdiff"
+	"github.com/hexops/gotextdiff/myers"
+	"github.com/hexops/gotextdiff/span"
 )
 
 var hunkRe = regexp.MustCompile(`^@@ -(\d+),?(\d*) \+(\d+),?(\d*) @@`)
 var skipRe = regexp.MustCompile(`^(---|\+\+\+)`)
 
-// ── Diff generation (wrapper around system diff -u) ────────────────
+// ── Diff generation (gotextdiff) ─────────────────────────────────
 
-func generateDiff(a, b string) string {
-	dir, err := os.MkdirTemp("", "inkscape-diff-*")
-	if err != nil {
+func generateDiff(aStr, bStr string) string {
+	if aStr == bStr {
 		return ""
 	}
-	defer os.RemoveAll(dir)
-
-	aPath := filepath.Join(dir, "previous.svg")
-	bPath := filepath.Join(dir, "current.svg")
-	os.WriteFile(aPath, []byte(a), 0644)
-	os.WriteFile(bPath, []byte(b), 0644)
-
-	out, err := exec.Command("diff", "-u", aPath, bPath).Output()
-	if err != nil {
-		if ee, ok := err.(*exec.ExitError); ok && ee.ExitCode() == 1 {
-			return string(out)
-		}
-		return ""
-	}
-	return ""
+	uri := span.URIFromPath("")
+	edits := myers.ComputeEdits(uri, aStr, bStr)
+	u := gotextdiff.ToUnified("previous.svg", "current.svg", aStr, edits)
+	return fmt.Sprint(u)
 }
 
 // ── Diff application ──────────────────────────────────────────────

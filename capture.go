@@ -6,7 +6,6 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -18,17 +17,9 @@ const (
 	dbusDest    = "org.inkscape.Inkscape"
 	dbusPath    = "/org/inkscape/Inkscape"
 	tlAttr      = "data-tlid"
-	pidFilename = "inkscape-timelapse.pid"
 )
 
 var tlAttrRE = regexp.MustCompile(`\s+data-tlid="[^"]*"`)
-
-func pidFilePath() string {
-	if dir := os.Getenv("XDG_RUNTIME_DIR"); dir != "" {
-		return filepath.Join(dir, pidFilename)
-	}
-	return filepath.Join("/tmp", pidFilename)
-}
 
 // ── D-Bus helpers ─────────────────────────────────────────────────
 
@@ -81,20 +72,28 @@ func injectMarker(conn *dbus.Conn, tlid string) bool {
 	return true
 }
 
+var _hasRemoveAttr int // 0=untested, 1=yes, -1=no
+
 func stripMarker(conn *dbus.Conn) {
+	if _hasRemoveAttr == -1 {
+		return
+	}
+
 	for _, step := range []struct {
 		action string
 		param  []dbus.Variant
 	}{
 		{"selection-set-backup", nil},
 		{"select-all", []dbus.Variant{dbus.MakeVariant("all")}},
-		{"object-set-attribute", []dbus.Variant{dbus.MakeVariant(tlAttr + ",")}},
+		{"object-remove-attribute", []dbus.Variant{dbus.MakeVariant(tlAttr)}},
 		{"selection-restore-backup", nil},
 	} {
 		if err := activate(conn, step.action, step.param); err != nil {
-			fmt.Fprintf(os.Stderr, "Marker strip step %q failed: %v\n", step.action, err)
+			_hasRemoveAttr = -1
+			return
 		}
 	}
+	_hasRemoveAttr = 1
 }
 
 func checkWindowCount(conn *dbus.Conn) int {
@@ -129,7 +128,7 @@ func checkWindowCount(conn *dbus.Conn) int {
 
 // ── Start ─────────────────────────────────────────────────────────
 
-func startCapture(f startFlags) {
+func recordCapture(f recordFlags) {
 	conn, err := dbus.ConnectSessionBus()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "D-Bus connection failed: %v\n", err)
@@ -142,12 +141,13 @@ func startCapture(f startFlags) {
 		os.Exit(1)
 	}
 
-	tlid := time.Now().UTC().Format("2006-01-02_15-04-05")
+	tlid := time.Now().Format("2006-01-02_15-04-05")
 
 	if !injectMarker(conn, tlid) {
 		fmt.Fprintln(os.Stderr, "Failed to inject recording marker.")
 		os.Exit(1)
 	}
+	defer stripMarker(conn)
 
 	svgRaw, err := captureSVG(conn)
 	if err != nil || svgRaw == "" {
@@ -207,30 +207,38 @@ func startCapture(f startFlags) {
 	}
 	defer tw.Close()
 
-	// Write pidfile
-	pidPath := pidFilePath()
-	os.WriteFile(pidPath, []byte(fmt.Sprintf("%d\n", os.Getpid())), 0644)
-	defer os.Remove(pidPath)
-
 	// Signal handling
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
 	fmt.Println("Recording (Ctrl+C to stop)...")
 
-	// Capture loop
 	for {
 		select {
 		case <-sigCh:
 			fmt.Println("\nStopping recording...")
 			return
-		case <-time.After(f.interval):
-			captureTick(conn, tw, tlid, &lastSVG, f, recPath)
+		default:
+		}
+
+		tStart := time.Now()
+		captureTick(conn, tw, tlid, &lastSVG, f, recPath)
+		elapsed := time.Since(tStart)
+
+		if sleep := f.interval - elapsed; sleep > 0 {
+			timer := time.NewTimer(sleep)
+			select {
+			case <-sigCh:
+				timer.Stop()
+				fmt.Println("\nStopping recording...")
+				return
+			case <-timer.C:
+			}
 		}
 	}
 }
 
-func captureTick(conn *dbus.Conn, tw *TLDWriter, tlid string, lastSVG *string, f startFlags, recPath string) {
+func captureTick(conn *dbus.Conn, tw *TLDWriter, tlid string, lastSVG *string, f recordFlags, recPath string) {
 	svgRaw, err := captureSVG(conn)
 	if err != nil || svgRaw == "" {
 		return
@@ -266,35 +274,6 @@ func captureTick(conn *dbus.Conn, tw *TLDWriter, tlid string, lastSVG *string, f
 	}
 	*lastSVG = svgStr
 	fmt.Printf("Capture at %s (%d bytes)\n", timestamp, len(diffText))
-}
-
-// ── Stop ──────────────────────────────────────────────────────────
-
-func cmdStop() {
-	pidBytes, err := os.ReadFile(pidFilePath())
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "No active recording found.")
-		os.Exit(1)
-	}
-
-	pid, err := strconv.Atoi(strings.TrimSpace(string(pidBytes)))
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "Invalid pidfile.")
-		os.Exit(1)
-	}
-
-	proc, err := os.FindProcess(pid)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "No active recording found.")
-		os.Exit(1)
-	}
-
-	if err := proc.Signal(syscall.SIGTERM); err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to signal recorder: %v\n", err)
-		os.Exit(1)
-	}
-
-	fmt.Println("Stop signal sent.")
 }
 
 // ── Helpers ───────────────────────────────────────────────────────

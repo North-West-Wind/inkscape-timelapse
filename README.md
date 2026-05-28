@@ -8,10 +8,10 @@ Single Go binary, no runtime dependencies.
 
 ## Usage
 
-### Capture
+### Record
 
 ```
-inkscape-timelapse start --interval=5 --save-dir=./recordings
+inkscape-timelapse record --interval=5 --save-dir=./recordings
 ```
 
 Records the currently focused Inkscape document at regular intervals.
@@ -26,13 +26,9 @@ elements at startup to verify window identity before each capture.
 | `--record-unchanged` | off | Record empty diffs when window unfocused |
 | `--time-format` | `2006-01-02T15:04:05Z` | Go time format for capture timestamps |
 
-```
-inkscape-timelapse stop
-```
-
 To continue a previous recording:
 ```
-inkscape-timelapse start --append recording.tld --interval=5
+inkscape-timelapse record --append recording.tld --interval=5
 ```
 
 All state is in-memory. If the process crashes, the incomplete recording

@@ -78,10 +78,8 @@ func main() {
 	args := os.Args[2:]
 
 	switch cmd {
-	case "start":
-		cmdStart(args)
-	case "stop":
-		cmdStop()
+	case "record":
+		cmdRecord(args)
 	case "render":
 		cmdRender(args)
 	case "jsonl":
@@ -100,8 +98,7 @@ func main() {
 func usage() {
 	name := filepath.Base(os.Args[0])
 	fmt.Fprintf(os.Stderr, `Usage:
-  %[1]s start [flags]            Start capture daemon
-  %[1]s stop                     Stop capture daemon
+  %[1]s record [flags]            Record a timelapse
   %[1]s render <recording> [flags]  Render .tld to .webm
   %[1]s jsonl <recording>        Decode .tld to JSONL on stdout
   %[1]s analyze <recording>      Print frame count and resolution stats
@@ -111,16 +108,16 @@ Run '%[1]s <command> --help' for command-specific flags.
 `, name)
 }
 
-type startFlags struct {
-	interval       time.Duration
-	saveDir        string
-	timeFmt        string
-	appendPath     string
+type recordFlags struct {
+	interval        time.Duration
+	saveDir         string
+	timeFmt         string
+	appendPath      string
 	recordUnchanged bool
 }
 
-func cmdStart(args []string) {
-	fs := newFlagSet("start")
+func cmdRecord(args []string) {
+	fs := newFlagSet("record")
 	interval := fs.Float64("interval", 5.0, "Capture interval in seconds")
 	saveDir := fs.String("save-dir", "", "Recording save directory")
 	timeFmt := fs.String("time-format", defaultTimeFmt, "Go time format for capture timestamps (default: ISO 8601)")
@@ -128,7 +125,7 @@ func cmdStart(args []string) {
 	recordUnchanged := fs.Bool("record-unchanged", false, "Record captures even when window unfocused (empty diff)")
 	fs.Parse(args)
 
-	startCapture(startFlags{
+	recordCapture(recordFlags{
 		interval:        time.Duration(*interval * float64(time.Second)),
 		saveDir:         *saveDir,
 		timeFmt:         *timeFmt,

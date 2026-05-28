@@ -26,8 +26,9 @@ type Record struct {
 // ── Writer (length-prefixed per-record deflate, crash-safe) ───────
 
 type TLDWriter struct {
-	mu sync.Mutex
-	f  *os.File
+	mu        sync.Mutex
+	f         *os.File
+	syncCount int // periodic fsync every N writes
 }
 
 func CreateTLD(path string) (*TLDWriter, error) {
@@ -107,7 +108,13 @@ func (tw *TLDWriter) writeCompressed(typ int, payload []byte) error {
 	if _, err := tw.f.Write(compressed); err != nil {
 		return err
 	}
-	return tw.f.Sync()
+
+	tw.syncCount++
+	if tw.syncCount >= 10 {
+		tw.syncCount = 0
+		return tw.f.Sync()
+	}
+	return nil
 }
 
 func (tw *TLDWriter) Close() error {
