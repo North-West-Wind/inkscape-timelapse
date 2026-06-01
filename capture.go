@@ -210,6 +210,7 @@ func recordCapture(f recordFlags) {
 	fmt.Println("Recording (Ctrl+C to stop)...")
 
 	var lastChangeUnix int64
+	curInterval := f.interval
 
 	for {
 		select {
@@ -220,10 +221,10 @@ func recordCapture(f recordFlags) {
 		}
 
 		tStart := time.Now()
-		captureTick(conn, tw, tlid, &lastSVG, f, &lastChangeUnix, &totalBytes)
+		captureTick(conn, tw, tlid, &lastSVG, f, &lastChangeUnix, &totalBytes, &curInterval)
 		elapsed := time.Since(tStart)
 
-		if sleep := f.interval - elapsed; sleep > 0 {
+		if sleep := curInterval - elapsed; sleep > 0 {
 			timer := time.NewTimer(sleep)
 			select {
 			case <-sigCh:
@@ -236,7 +237,7 @@ func recordCapture(f recordFlags) {
 	}
 }
 
-func captureTick(conn *dbus.Conn, tw *TLDWriter, tlid string, lastSVG *string, f recordFlags, lastChangeUnix *int64, totalBytes *int) {
+func captureTick(conn *dbus.Conn, tw *TLDWriter, tlid string, lastSVG *string, f recordFlags, lastChangeUnix *int64, totalBytes *int, curInterval *time.Duration) {
 	svgRaw, err := captureSVG(conn)
 	if err != nil || svgRaw == "" {
 		return
@@ -244,6 +245,11 @@ func captureTick(conn *dbus.Conn, tw *TLDWriter, tlid string, lastSVG *string, f
 
 	marker := fmt.Sprintf(`%s="%s"`, tlAttr, tlid)
 	if !strings.Contains(svgRaw, marker) {
+		// Non-recording window focused: widen interval to reduce crash risk
+		if *curInterval < time.Second {
+			*curInterval = time.Second
+			fmt.Fprintf(os.Stderr, "\nNon-recording window focused, slowing to 1s intervals\n")
+		}
 		if !f.recordUnchanged {
 			return
 		}
@@ -251,6 +257,12 @@ func captureTick(conn *dbus.Conn, tw *TLDWriter, tlid string, lastSVG *string, f
 		tw.WriteCapture(ts, "")
 		printStatus(ts, *lastChangeUnix, *totalBytes)
 		return
+	}
+
+	// Recording window focused: restore user interval
+	if *curInterval != f.interval {
+		*curInterval = f.interval
+		fmt.Fprintf(os.Stderr, "\nRecording window refocused, restoring interval\n")
 	}
 
 	svgStr := cleanSVG(svgRaw)
