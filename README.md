@@ -92,4 +92,7 @@ to the initial document state — effectively the full initial SVG.
 
 ## Disclaimer
 
-This project was created with assistance from AI (OpenCode).
+This project WAS created with assistance from AI (OpenCode).
+It served as my first experience with vibe-coding, and [I have written a blog post about it.](https://blog.northwestw.in/p/2026/05/30/my-first-vibe-coding-experience)
+
+I (the human) have taken over control after commit `6d9bb49e147d4faa0e9c0c99af9484e7e612d017`
