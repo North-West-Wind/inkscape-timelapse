@@ -46,8 +46,7 @@ inkscape-timelapse render recording.tld --framerate=10 --output=timelapse.webm
 ```
 
 Reconstructs each SVG frame by applying incremental diffs, renders to PNG
-in parallel via `rsvg-convert` (default) or `inkscape --pipe`, and pipes
-directly to `ffmpeg`.
+in parallel `inkscape --pipe`, and pipes directly to `ffmpeg`.
 
 | Flag | Default | Description |
 |------|---------|-------------|
