@@ -6,6 +6,8 @@ video with transparency.
 
 Single Go binary, no runtime dependencies.
 
+Due to the use of D-Bus, this program only works on Linux.
+
 ## Usage
 
 ### Record
@@ -23,8 +25,7 @@ elements at startup to verify window identity before each capture.
 | `--interval` | `5` | Seconds between captures |
 | `--save-dir` | current dir | Recording output directory |
 | `--append` | — | Continue recording to an existing .tld file |
-| `--record-unchanged` | off | Record empty diffs when window unfocused |
-| `--time-format` | `2006-01-02T15:04:05Z` | Go time format for capture timestamps |
+| `--skip-unchanged` | off | Skip capture where document didn't change |
 
 To continue a previous recording:
 ```
@@ -54,7 +55,6 @@ directly to `ffmpeg`.
 | `--align-x` | `center` | Horizontal alignment: `left`, `center`, `right` |
 | `--align-y` | `center` | Vertical alignment: `top`, `center`, `bottom` |
 | `--stretch` | off | Stretch SVG to fill canvas (overrides alignment) |
-| `--engine` | `rsvg` | Render engine: `rsvg` (fast) or `inkscape` |
 | `--workers` | CPU count | Parallel render workers |
 
 Output codec: libvpx-vp9 with yuva420p (transparency).
@@ -67,7 +67,7 @@ inkscape-timelapse analyze recording.tld    # Frame count and resolution stats
 inkscape-timelapse extract recording.tld --frame=42 --output=frame.svg
 ```
 
-## .tld format
+## TimeLapse Diff (.tld) format
 
 Binary, append-only, no footer. Each record is independently deflated
 and length-prefixed, so truncated trailing data is safely ignored.
@@ -86,8 +86,8 @@ TLTL                     magic
 [diff]     dlen bytes    unified diff (uncompressed)
 ```
 
-Empty diff = document unchanged at that timestamp (produced by
-`--record-unchanged`). The first record's diff is from an empty SVG
+Empty diff = document unchanged at that timestamp (only captured when
+`--skip-unchanged` is false). The first record's diff is from an empty SVG
 to the initial document state — effectively the full initial SVG.
 
 ## Disclaimer

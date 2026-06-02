@@ -107,10 +107,10 @@ Run '%[1]s <command> --help' for command-specific flags.
 }
 
 type recordFlags struct {
-	interval        time.Duration
-	saveDir         string
-	appendPath      string
-	recordUnchanged bool
+	interval      time.Duration
+	saveDir       string
+	appendPath    string
+	skipUnchanged bool
 }
 
 func cmdRecord(args []string) {
@@ -118,29 +118,28 @@ func cmdRecord(args []string) {
 	interval := fs.Float64("interval", 5.0, "Capture interval in seconds")
 	saveDir := fs.String("save-dir", "", "Recording save directory")
 	appendPath := fs.String("append", "", "Continue recording to an existing .tld file")
-	recordUnchanged := fs.Bool("record-unchanged", false, "Record captures even when window unfocused (empty diff)")
+	skipUnchanged := fs.Bool("skip-unchanged", false, "Skip capture where document didn't change")
 	fs.Parse(args)
 
 	recordCapture(recordFlags{
-		interval:        time.Duration(*interval * float64(time.Second)),
-		saveDir:         *saveDir,
-		appendPath:      *appendPath,
-		recordUnchanged: *recordUnchanged,
+		interval:      time.Duration(*interval * float64(time.Second)),
+		saveDir:       *saveDir,
+		appendPath:    *appendPath,
+		skipUnchanged: *skipUnchanged,
 	})
 }
 
 type renderFlags struct {
-	recording       string
-	framerate       float64
-	output          string
-	skipUnchanged   bool
+	recording        string
+	framerate        float64
+	output           string
+	skipUnchanged    bool
 	resolutionPolicy string
-	resolution      string
-	alignX          string
-	alignY          string
-	stretch         bool
-	engine          string
-	workers         int
+	resolution       string
+	alignX           string
+	alignY           string
+	stretch          bool
+	workers          int
 }
 
 func cmdRender(args []string) {
@@ -153,7 +152,6 @@ func cmdRender(args []string) {
 	alignX := fs.String("align-x", "center", "left|center|right")
 	alignY := fs.String("align-y", "center", "top|center|bottom")
 	stretch := fs.Bool("stretch", false, "Stretch SVG to fill canvas")
-	engine := fs.String("engine", "rsvg", "rsvg|inkscape")
 	workers := fs.Int("workers", 0, "Render workers (default: CPU count)")
 
 	recPath, flagArgs := extractPosArg(args, fs)
@@ -178,7 +176,6 @@ func cmdRender(args []string) {
 		alignX:           *alignX,
 		alignY:           *alignY,
 		stretch:          *stretch,
-		engine:           *engine,
 		workers:          *workers,
 	})
 }

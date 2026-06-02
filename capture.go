@@ -14,9 +14,9 @@ import (
 )
 
 const (
-	dbusDest    = "org.inkscape.Inkscape"
-	dbusPath    = "/org/inkscape/Inkscape"
-	tlAttr      = "data-tlid"
+	dbusDest = "org.inkscape.Inkscape"
+	dbusPath = "/org/inkscape/Inkscape"
+	tlAttr   = "data-tlid"
 )
 
 var tlAttrRE = regexp.MustCompile(`\s+data-tlid="[^"]*"`)
@@ -250,7 +250,7 @@ func captureTick(conn *dbus.Conn, tw *TLDWriter, tlid string, lastSVG *string, f
 			*curInterval = time.Second
 			fmt.Fprintf(os.Stderr, "\nNon-recording window focused, slowing to 1s intervals\n")
 		}
-		if !f.recordUnchanged {
+		if f.skipUnchanged {
 			return
 		}
 		ts := uint64(time.Now().UnixMilli())
@@ -266,7 +266,7 @@ func captureTick(conn *dbus.Conn, tw *TLDWriter, tlid string, lastSVG *string, f
 	}
 
 	svgStr := cleanSVG(svgRaw)
-	if svgStr == *lastSVG && !f.recordUnchanged {
+	if svgStr == *lastSVG && f.skipUnchanged {
 		return
 	}
 

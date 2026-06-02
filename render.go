@@ -58,20 +58,15 @@ func setCanvas(svg string, cw, ch int, alignX, alignY string, stretch bool) stri
 	return svg
 }
 
-func svgToPNG(svgData, engine string) ([]byte, error) {
-	var cmd *exec.Cmd
-	if engine == "rsvg" {
-		cmd = exec.Command("rsvg-convert", "--format", "png")
-	} else {
-		cmd = exec.Command("inkscape", "--pipe", "--export-type=png")
-	}
+func svgToPNG(svgData string) ([]byte, error) {
+	cmd := exec.Command("inkscape", "--pipe", "--export-type=png")
 	cmd.Stdin = strings.NewReader(svgData)
 	out, err := cmd.Output()
 	if err != nil {
 		if ee, ok := err.(*exec.ExitError); ok {
-			return nil, fmt.Errorf("%s failed: %s", engine, string(ee.Stderr))
+			return nil, fmt.Errorf("Inkscape failed: %s", string(ee.Stderr))
 		}
-		return nil, fmt.Errorf("%s failed: %w", engine, err)
+		return nil, fmt.Errorf("Inkscape failed: %w", err)
 	}
 	return out, nil
 }
@@ -217,7 +212,7 @@ func startRender(f renderFlags) {
 	}
 
 	tStart := time.Now()
-	rendered := renderToFFmpeg(records, f.skipUnchanged, cw, ch, f.alignX, f.alignY, f.stretch, f.engine, workers, stdin)
+	rendered := renderToFFmpeg(records, f.skipUnchanged, cw, ch, f.alignX, f.alignY, f.stretch, workers, stdin)
 	elapsed := time.Since(tStart)
 
 	stdin.Close()
@@ -234,7 +229,7 @@ func startRender(f renderFlags) {
 func renderToFFmpeg(
 	records []Record, skipUnchanged bool,
 	cw, ch int, alignX, alignY string, stretch bool,
-	engine string, workers int, stdin io.WriteCloser,
+	workers int, stdin io.WriteCloser,
 ) int {
 	jobs := make(chan frameJob, workers*2)
 	results := make(chan frameResult, workers*2)
@@ -247,7 +242,7 @@ func renderToFFmpeg(
 			defer wg.Done()
 			for j := range jobs {
 				svg := setCanvas(j.svg, cw, ch, alignX, alignY, stretch)
-				png, err := svgToPNG(svg, engine)
+				png, err := svgToPNG(svg)
 				results <- frameResult{j.num, png, err}
 			}
 		}()
