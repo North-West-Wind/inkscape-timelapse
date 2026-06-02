@@ -6,7 +6,11 @@ video with transparency.
 
 Single Go binary, no runtime dependencies.
 
+## Prerequisites
+
 Due to the use of D-Bus, this program only works on Linux.
+
+The `inkscape` binary must be present in `$PATH` as well.
 
 ## Usage
 
