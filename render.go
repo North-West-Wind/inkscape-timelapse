@@ -60,15 +60,6 @@ func setCanvas(svg string, cw, ch int, alignX, alignY string, stretch bool) stri
 
 func svgToPNG(svgData string) ([]byte, error) {
 	cmd := exec.Command("inkscape", "--pipe", "--export-type=png")
-	// Create a copy of current env and remove DBUS variables
-	env := os.Environ()
-	newEnv := make([]string, 0, len(env))
-	for _, e := range env {
-		if !strings.HasPrefix(e, "DBUS_SESSION_BUS_ADDRESS=") {
-			newEnv = append(newEnv, e)
-		}
-	}
-	cmd.Env = newEnv
 	cmd.Stdin = strings.NewReader(svgData)
 	out, err := cmd.Output()
 	if err != nil {
