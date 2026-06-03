@@ -3,22 +3,33 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 )
 
 // ── jsonl ─────────────────────────────────────────────────────────
 
 func runJSONL(path string) {
-	records, err := ReadRecords(path)
+	tr, err := OpenTLDRead(path)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error reading %s: %v\n", path, err)
+		fmt.Fprintf(os.Stderr, "Error opening %s: %v\n", path, err)
 		os.Exit(1)
 	}
+	defer tr.Close()
 
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetEscapeHTML(false)
 
-	for _, rec := range records {
+	var count int
+	var rec Record
+	for {
+		err = tr.ReadRecord(&rec)
+		if err != nil {
+			if err != io.EOF {
+				fmt.Fprintf(os.Stderr, "Error reading %s at frame %d: %v\n", path, count, err)
+			}
+			break
+		}
 		obj := map[string]interface{}{
 			"timestamp_ms": rec.TS,
 			"diff":         rec.Diff,
@@ -27,33 +38,25 @@ func runJSONL(path string) {
 			fmt.Fprintf(os.Stderr, "JSON encode error: %v\n", err)
 			os.Exit(1)
 		}
+		count++
 	}
 }
 
 // ── analyze ───────────────────────────────────────────────────────
 
 func runAnalyze(path string) {
-	records, err := ReadRecords(path)
+	tr, err := OpenTLDRead(path)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error reading %s: %v\n", path, err)
+		fmt.Fprintf(os.Stderr, "Error opening %s: %v\n", path, err)
 		os.Exit(1)
 	}
+	defer tr.Close()
 
-	ana := analyzeRecords(records, false)
-
-	// Count non-empty diffs separately
-	totalNoEmpty := 0
-	svg := ""
-	for _, rec := range records {
-		if isNonEmpty(rec.Diff) {
-			svg = ApplyDiff(svg, rec.Diff)
-			totalNoEmpty++
-		}
-	}
+	ana := tr.Analyze()
 
 	fmt.Printf("Frames:\n")
 	fmt.Printf("  total:              %d\n", ana.count)
-	fmt.Printf("  skip-unchanged:     %d\n", totalNoEmpty)
+	fmt.Printf("  skip-unchanged:     %d\n", ana.count-ana.emptyCount)
 	fmt.Printf("Resolution:\n")
 	fmt.Printf("  initial:            %dx%d\n", ana.initW, ana.initH)
 	fmt.Printf("  min:                %dx%d\n", ana.minW, ana.minH)
@@ -63,15 +66,24 @@ func runAnalyze(path string) {
 // ── extract ───────────────────────────────────────────────────────
 
 func runExtract(path string, frame int, output string) {
-	records, err := ReadRecords(path)
+	tr, err := OpenTLDRead(path)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error reading %s: %v\n", path, err)
+		fmt.Fprintf(os.Stderr, "Error opening %s: %v\n", path, err)
 		os.Exit(1)
 	}
+	defer tr.Close()
 
 	svg := ""
 	current := 0
-	for _, rec := range records {
+	var rec Record
+	for {
+		err = tr.ReadRecord(&rec)
+		if err != nil {
+			if err != io.EOF {
+				fmt.Fprintf(os.Stderr, "Error reading %s at frame %d: %v\n", path, current, err)
+			}
+			break
+		}
 		if isNonEmpty(rec.Diff) {
 			svg = ApplyDiff(svg, rec.Diff)
 		}

@@ -18,7 +18,19 @@ func TestTLDRoundtrip(t *testing.T) {
 	tw.WriteCapture(200, "diff2")
 	tw.Close()
 
-	records, _ := ReadRecords(path)
+	tr, _ := OpenTLDRead(path)
+	defer tr.Close()
+
+	records := make([]Record, 0)
+	var rec Record
+	for {
+		err := tr.ReadRecord(&rec)
+		if err != nil {
+			break
+		}
+		records = append(records, rec)
+	}
+
 	if len(records) != 2 {
 		t.Fatalf("expected 2 records, got %d", len(records))
 	}
@@ -44,7 +56,19 @@ func TestCrashTruncated(t *testing.T) {
 	data, _ := os.ReadFile(path)
 	os.WriteFile(path, data[:fi.Size()-10], 0644)
 
-	records, _ := ReadRecords(path)
+	tr, _ := OpenTLDRead(path)
+	defer tr.Close()
+
+	records := make([]Record, 0)
+	var rec Record
+	for {
+		err := tr.ReadRecord(&rec)
+		if err != nil {
+			break
+		}
+		records = append(records, rec)
+	}
+
 	if len(records) < 1 {
 		t.Fatalf("expected at least 1 record after truncation, got %d", len(records))
 	}
@@ -102,8 +126,10 @@ func TestAnalyze(t *testing.T) {
 	tw.WriteCapture(300, "")
 	tw.Close()
 
-	records, _ := ReadRecords(path)
-	ana := analyzeRecords(records, false)
+	tr, _ := OpenTLDRead(path)
+	defer tr.Close()
+
+	ana := tr.Analyze()
 	if ana.count != 3 {
 		t.Fatalf("expected 3 frames, got %d", ana.count)
 	}
@@ -111,9 +137,8 @@ func TestAnalyze(t *testing.T) {
 		t.Fatalf("bad size: %dx%d", ana.initW, ana.initH)
 	}
 
-	ana2 := analyzeRecords(records, true)
-	if ana2.count != 1 {
-		t.Fatalf("expected 1 frame with skip, got %d", ana2.count)
+	if ana.count-ana.emptyCount != 1 {
+		t.Fatalf("expected 1 frame with skip, got %d", ana.count-ana.emptyCount)
 	}
 }
 
@@ -142,7 +167,19 @@ func TestAppendCompat(t *testing.T) {
 	tw2.WriteCapture(200, "diff2")
 	tw2.Close()
 
-	records, _ := ReadRecords(path)
+	tr, _ := OpenTLDRead(path)
+	defer tr.Close()
+
+	records := make([]Record, 0)
+	var rec Record
+	for {
+		err := tr.ReadRecord(&rec)
+		if err != nil {
+			break
+		}
+		records = append(records, rec)
+	}
+
 	if len(records) != 2 {
 		t.Fatalf("expected 2 total records, got %d", len(records))
 	}

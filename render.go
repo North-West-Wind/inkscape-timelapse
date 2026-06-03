@@ -60,13 +60,22 @@ func setCanvas(svg string, cw, ch int, alignX, alignY string, stretch bool) stri
 
 func svgToPNG(svgData string) ([]byte, error) {
 	cmd := exec.Command("inkscape", "--pipe", "--export-type=png")
+	// Create a copy of current env and remove DBUS variables
+	env := os.Environ()
+	newEnv := make([]string, 0, len(env))
+	for _, e := range env {
+		if !strings.HasPrefix(e, "DBUS_SESSION_BUS_ADDRESS=") {
+			newEnv = append(newEnv, e)
+		}
+	}
+	cmd.Env = newEnv
 	cmd.Stdin = strings.NewReader(svgData)
 	out, err := cmd.Output()
 	if err != nil {
 		if ee, ok := err.(*exec.ExitError); ok {
-			return nil, fmt.Errorf("Inkscape failed: %s", string(ee.Stderr))
+			return nil, fmt.Errorf("inkscape failed: %s", string(ee.Stderr))
 		}
-		return nil, fmt.Errorf("Inkscape failed: %w", err)
+		return nil, fmt.Errorf("inkscape failed: %w", err)
 	}
 	return out, nil
 }
@@ -84,66 +93,22 @@ type frameResult struct {
 	err error
 }
 
-// ── Analyze ───────────────────────────────────────────────────────
-
-type analysis struct {
-	count        int
-	initW, initH int
-	maxW, maxH   int
-	minW, minH   int
-}
-
-func analyzeRecords(records []Record, skipUnchanged bool) analysis {
-	var a analysis
-	var svg string
-
-	for _, rec := range records {
-		if isNonEmpty(rec.Diff) {
-			svg = ApplyDiff(svg, rec.Diff)
-		}
-		if !isNonEmpty(rec.Diff) && skipUnchanged {
-			continue
-		}
-		if a.count == 0 {
-			w, h := svgSize(svg)
-			if w > 0 && h > 0 {
-				a.initW, a.initH = w, h
-				a.maxW, a.maxH = w, h
-				a.minW, a.minH = w, h
-			}
-		} else {
-			w, h := svgSize(svg)
-			if w > 0 && h > 0 {
-				if w > a.maxW {
-					a.maxW = w
-				}
-				if h > a.maxH {
-					a.maxH = h
-				}
-				if w < a.minW {
-					a.minW = w
-				}
-				if h < a.minH {
-					a.minH = h
-				}
-			}
-		}
-		a.count++
-	}
-	return a
-}
-
 // ── Render command ────────────────────────────────────────────────
 
 func startRender(f renderFlags) {
-	records, err := ReadRecords(f.recording)
+	tr, err := OpenTLDRead(f.recording)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to read recording: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Failed to open recording: %v\n", err)
 		os.Exit(1)
 	}
+	defer tr.Close()
 
-	ana := analyzeRecords(records, f.skipUnchanged)
-	if ana.count == 0 {
+	ana := tr.Analyze()
+	relevantFrames := ana.count
+	if f.skipUnchanged {
+		relevantFrames -= ana.emptyCount
+	}
+	if relevantFrames == 0 {
 		fmt.Fprintln(os.Stderr, "No frames found.")
 		os.Exit(1)
 	}
@@ -172,7 +137,7 @@ func startRender(f renderFlags) {
 		os.Exit(1)
 	}
 
-	total := ana.count
+	total := relevantFrames
 	fmt.Printf("Canvas: %dx%d, %d frames at %.1f fps → %s\n", cw, ch, total, f.framerate, f.output)
 
 	workers := f.workers
@@ -212,7 +177,7 @@ func startRender(f renderFlags) {
 	}
 
 	tStart := time.Now()
-	rendered := renderToFFmpeg(records, f.skipUnchanged, cw, ch, f.alignX, f.alignY, f.stretch, workers, stdin)
+	rendered := renderToFFmpeg(tr, f.skipUnchanged, cw, ch, f.alignX, f.alignY, f.stretch, workers, stdin)
 	elapsed := time.Since(tStart)
 
 	stdin.Close()
@@ -227,7 +192,7 @@ func startRender(f renderFlags) {
 }
 
 func renderToFFmpeg(
-	records []Record, skipUnchanged bool,
+	tr *TLDReader, skipUnchanged bool,
 	cw, ch int, alignX, alignY string, stretch bool,
 	workers int, stdin io.WriteCloser,
 ) int {
@@ -253,7 +218,12 @@ func renderToFFmpeg(
 		defer close(jobs)
 		num := 0
 		svg := ""
-		for _, rec := range records {
+		var rec Record
+		for {
+			err := tr.ReadRecord(&rec)
+			if err != nil {
+				break
+			}
 			if isNonEmpty(rec.Diff) {
 				svg = ApplyDiff(svg, rec.Diff)
 			}
@@ -302,7 +272,7 @@ func renderToFFmpeg(
 		} else {
 			buf[r.num] = pending{png: r.png}
 		}
-		if sent%10 == 0 {
+		if sent%workers == 0 {
 			fmt.Fprintf(os.Stderr, "\r  Frame %d", sent)
 		}
 	}

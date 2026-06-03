@@ -98,64 +98,144 @@ func (tw *TLDWriter) Close() error {
 
 // ── Reader ────────────────────────────────────────────────────────
 
-func ReadRecords(path string) ([]Record, error) {
-	data, err := os.ReadFile(path)
+type TLDReader struct {
+	f *os.File
+}
+
+func OpenTLDRead(path string) (*TLDReader, error) {
+	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
-	if len(data) < 4 || string(data[:4]) != Magic {
+	header := make([]byte, 4)
+	n, err := f.Read(header)
+	if err != nil {
+		return nil, err
+	}
+	if n < 4 || string(header) != Magic {
 		return nil, fmt.Errorf("invalid .tld magic")
 	}
-	return readRecords(data[4:])
+	return &TLDReader{f: f}, nil
 }
 
-func readRecords(body []byte) ([]Record, error) {
-	offset := 0
-	var records []Record
+func (tr *TLDReader) ReadRecord(record *Record) error {
+	recLenB := make([]byte, 4)
+	n, err := tr.f.Read(recLenB)
+	if err != nil {
+		return err
+	}
+	if n < 4 {
+		return fmt.Errorf("invalid record length")
+	}
+	recLen := binary.LittleEndian.Uint32(recLenB)
+	data := make([]byte, recLen)
+	n, err = tr.f.Read(data)
+	if err != nil {
+		return err
+	}
+	if n < int(recLen) {
+		return fmt.Errorf("invalid record data")
+	}
+	rc := flate.NewReader(bytes.NewReader(data))
+	raw, err := io.ReadAll(rc)
+	rc.Close()
+	if err != nil && len(raw) == 0 {
+		return fmt.Errorf("invalid record data")
+	}
+	if len(raw) < 12 {
+		return fmt.Errorf("invalid record data")
+	}
+	ts := binary.LittleEndian.Uint64(raw[0:8])
+	dlen := int(binary.LittleEndian.Uint32(raw[8:12]))
+	if 12+dlen > len(raw) {
+		return fmt.Errorf("invalid record data")
+	}
+	diff := string(raw[12 : 12+dlen])
+	*record = Record{TS: ts, Diff: diff}
+	return nil
+}
 
-	for offset+4 <= len(body) {
-		recLen := int(binary.LittleEndian.Uint32(body[offset : offset+4]))
-		if recLen <= 0 || recLen > 10*1024*1024 {
+// ── Analyze ───────────────────────────────────────────────────────
+
+type Analysis struct {
+	count, emptyCount int
+	initW, initH      int
+	maxW, maxH        int
+	minW, minH        int
+}
+
+func (tr *TLDReader) Analyze() Analysis {
+	var a Analysis
+	var svg string
+	var rec Record
+
+	for {
+		err := tr.ReadRecord(&rec)
+		if err != nil {
 			break
 		}
-		offset += 4
-		if offset+recLen > len(body) {
-			break
+		if isNonEmpty(rec.Diff) {
+			svg = ApplyDiff(svg, rec.Diff)
 		}
-		rc := flate.NewReader(bytes.NewReader(body[offset : offset+recLen]))
-		raw, err := io.ReadAll(rc)
-		rc.Close()
-		if err != nil && len(raw) == 0 {
-			break
+		if !isNonEmpty(rec.Diff) {
+			a.emptyCount++
 		}
-		if len(raw) < 12 {
-			break
+		if a.count == 0 {
+			w, h := svgSize(svg)
+			if w > 0 && h > 0 {
+				a.initW, a.initH = w, h
+				a.maxW, a.maxH = w, h
+				a.minW, a.minH = w, h
+			}
+		} else {
+			w, h := svgSize(svg)
+			if w > 0 && h > 0 {
+				if w > a.maxW {
+					a.maxW = w
+				}
+				if h > a.maxH {
+					a.maxH = h
+				}
+				if w < a.minW {
+					a.minW = w
+				}
+				if h < a.minH {
+					a.minH = h
+				}
+			}
 		}
-		ts := binary.LittleEndian.Uint64(raw[0:8])
-		dlen := int(binary.LittleEndian.Uint32(raw[8:12]))
-		if 12+dlen > len(raw) {
-			break
-		}
-		diff := string(raw[12 : 12+dlen])
-		records = append(records, Record{TS: ts, Diff: diff})
-		offset += recLen
+		a.count++
 	}
 
-	if len(records) == 0 {
-		return nil, fmt.Errorf("no records found")
-	}
-	return records, nil
+	// Be kind, rewind
+	tr.f.Seek(4, io.SeekStart)
+	return a
+}
+
+func (tr *TLDReader) Close() error {
+	return tr.f.Close()
 }
 
 // ── Reconstruction (for --append) ─────────────────────────────────
 
 func ReconstructSVG(path string) (lastSVG string, captures int, totalBytes int, err error) {
-	records, err := ReadRecords(path)
+	tr, err := OpenTLDRead(path)
 	if err != nil {
 		return "", 0, 0, err
 	}
+	defer tr.Close()
+
 	var svg string
-	for _, rec := range records {
+	var rec Record
+	for {
+		err = tr.ReadRecord(&rec)
+		if err != nil {
+			if err != io.EOF {
+				fmt.Fprintf(os.Stderr, "Error reading %s at frame %d: %v\n", path, captures, err)
+			}
+			break
+		}
+
 		captures++
 		totalBytes += len(rec.Diff)
 		if isNonEmpty(rec.Diff) {
