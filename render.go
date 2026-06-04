@@ -1,14 +1,17 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -71,6 +74,29 @@ func svgToPNG(svgData string) ([]byte, error) {
 	return out, nil
 }
 
+func findInkscapePid() (pid int) {
+	cmd := exec.Command("pidof", "inkscape")
+	output, err := cmd.Output()
+
+	if err == nil {
+		pid, err = strconv.Atoi(strings.TrimSuffix(string(output), "\n"))
+		if err != nil {
+			pid = 0
+		}
+		return
+	}
+	return
+}
+
+func isProcessRunning(pid int) bool {
+	proc, err := os.FindProcess(pid)
+	if err == nil {
+		err = proc.Signal(syscall.Signal(0))
+		return err == nil
+	}
+	return false
+}
+
 // ── Frames types ─────────────────────────────────────────────────
 
 type frameJob struct {
@@ -81,7 +107,6 @@ type frameJob struct {
 type frameResult struct {
 	num int
 	png []byte
-	err error
 }
 
 // ── Render command ────────────────────────────────────────────────
@@ -167,9 +192,53 @@ func startRender(f renderFlags) {
 		os.Exit(1)
 	}
 
+	// For multi-worker, we need an Inkscape instance
+	paused := false
+	done := false
+	if workers > 1 {
+		pid := findInkscapePid()
+		stdin := bufio.NewReader(os.Stdin)
+		if pid == 0 {
+			fmt.Println("To render with multiple workers, a persistent Inkscape instance must exist")
+			fmt.Print("Please launch Inkscape, then press 'Enter'...")
+			stdin.ReadBytes('\n')
+			pid = findInkscapePid()
+		}
+
+		if pid == 0 {
+			fmt.Println("Inkscape instance not found. Setting workers to 1...")
+			workers = 1
+		} else {
+			go func() {
+				ticker := time.NewTicker(time.Second)
+				for range ticker.C {
+					if !isProcessRunning(pid) {
+						break
+					}
+				}
+				for !done {
+					paused = true
+					fmt.Printf("\nInkscape process exited. Please spawn a new one, then press 'Enter'...\n")
+					stdin.ReadBytes('\n')
+					pid = findInkscapePid()
+					if pid != 0 {
+						fmt.Println("Found Inkscape instance")
+						paused = false
+						for range ticker.C {
+							if !isProcessRunning(pid) {
+								break
+							}
+						}
+					}
+				}
+			}()
+		}
+	}
+
 	tStart := time.Now()
-	rendered := renderToFFmpeg(tr, f.skipUnchanged, cw, ch, f.alignX, f.alignY, f.stretch, workers, stdin)
+	rendered := renderToFFmpeg(tr, f.skipUnchanged, cw, ch, f.alignX, f.alignY, f.stretch, workers, stdin, &paused)
 	elapsed := time.Since(tStart)
+	done = true
 
 	stdin.Close()
 	err = ffmpeg.Wait()
@@ -185,21 +254,31 @@ func startRender(f renderFlags) {
 func renderToFFmpeg(
 	tr *TLDReader, skipUnchanged bool,
 	cw, ch int, alignX, alignY string, stretch bool,
-	workers int, stdin io.WriteCloser,
+	workers int, stdin io.WriteCloser, paused *bool,
 ) int {
 	jobs := make(chan frameJob, workers*2)
 	results := make(chan frameResult, workers*2)
 
 	// Workers
 	var wg sync.WaitGroup
-	for i := 0; i < workers; i++ {
+	for range workers {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for j := range jobs {
-				svg := setCanvas(j.svg, cw, ch, alignX, alignY, stretch)
+			for job := range jobs {
+				svg := setCanvas(job.svg, cw, ch, alignX, alignY, stretch)
+				for *paused {
+					time.Sleep(time.Millisecond * 100)
+				}
 				png, err := svgToPNG(svg)
-				results <- frameResult{j.num, png, err}
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "\nRender error (frame %d): %v\n", job.num, err)
+					go func(job frameJob) {
+						jobs <- job
+					}(job)
+				} else {
+					results <- frameResult{job.num, png}
+				}
 			}
 		}()
 	}
@@ -241,11 +320,6 @@ func renderToFFmpeg(
 	sent := 0
 
 	for r := range results {
-		if r.err != nil {
-			fmt.Fprintf(os.Stderr, "\nRender error (frame %d): %v\n", r.num, r.err)
-			continue
-		}
-
 		if r.num == next {
 			stdin.Write(r.png)
 			sent++
@@ -263,9 +337,7 @@ func renderToFFmpeg(
 		} else {
 			buf[r.num] = pending{png: r.png}
 		}
-		if sent%workers == 0 {
-			fmt.Fprintf(os.Stderr, "\r  Frame %d", sent)
-		}
+		fmt.Fprintf(os.Stderr, "\r  Frame %d (buffered %d)", sent, len(buf))
 	}
 
 	return sent
