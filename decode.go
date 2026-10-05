@@ -61,6 +61,12 @@ func runAnalyze(path string) {
 	fmt.Printf("  initial:            %dx%d\n", ana.initW, ana.initH)
 	fmt.Printf("  min:                %dx%d\n", ana.minW, ana.minH)
 	fmt.Printf("  max:                %dx%d\n", ana.maxW, ana.maxH)
+	if len(ana.resChanges) > 1 {
+		fmt.Printf("Resolution changes:\n")
+		for _, resChange := range ana.resChanges {
+			fmt.Printf("  at %d: %dx%d->%dx%d\n", resChange.count, resChange.fromW, resChange.fromH, resChange.toW, resChange.toH)
+		}
+	}
 }
 
 // ── extract ───────────────────────────────────────────────────────
