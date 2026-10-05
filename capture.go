@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"os"
 	"os/signal"
@@ -207,7 +208,17 @@ func recordCapture(f recordFlags) {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
-	fmt.Println("Recording (Ctrl+C to stop)...")
+	// ENTER handling
+	scanCh := make(chan string, 1)
+	go func() {
+		defer close(scanCh)
+		scan := bufio.NewScanner(os.Stdin)
+		for scan.Scan() {
+			scanCh <- scan.Text()
+		}
+	}()
+
+	fmt.Println("Recording (ENTER to pause, Ctrl+C to stop)...")
 
 	var lastChangeUnix int64
 	curInterval := f.interval
@@ -217,6 +228,9 @@ func recordCapture(f recordFlags) {
 		case <-sigCh:
 			fmt.Println("\nStopping recording...")
 			return
+		case <-scanCh:
+			fmt.Print("Paused recording. Press ENTER to resume")
+			<-scanCh
 		default:
 		}
 
