@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"codeberg.org/NorthWestWind/inkscape-timelapse/util"
+	"codeberg.org/NorthWestWind/inkscape-timelapse/svgd"
 )
 
 func TestSVGDRoundtrip(t *testing.T) {
@@ -14,16 +14,16 @@ func TestSVGDRoundtrip(t *testing.T) {
 	defer os.RemoveAll(dir)
 	path := filepath.Join(dir, "test.tld")
 
-	tw, _ := util.CreateSVGD(path)
+	tw, _ := svgd.CreateSVGD(path)
 	tw.WriteCapture(100, "diff1")
 	tw.WriteCapture(200, "diff2")
 	tw.Close()
 
-	tr, _ := util.OpenSVGDRead(path)
+	tr, _ := svgd.OpenSVGDRead(path)
 	defer tr.Close()
 
-	records := make([]util.Record, 0)
-	var rec util.Record
+	records := make([]svgd.Record, 0)
+	var rec svgd.Record
 	for {
 		err := tr.ReadRecord(&rec)
 		if err != nil {
@@ -48,7 +48,7 @@ func TestCrashTruncated(t *testing.T) {
 	defer os.RemoveAll(dir)
 	path := filepath.Join(dir, "test.tld")
 
-	tw, _ := util.CreateSVGD(path)
+	tw, _ := svgd.CreateSVGD(path)
 	tw.WriteCapture(100, "diff1")
 	tw.WriteCapture(200, "diff2")
 	tw.Close()
@@ -57,11 +57,11 @@ func TestCrashTruncated(t *testing.T) {
 	data, _ := os.ReadFile(path)
 	os.WriteFile(path, data[:fi.Size()-10], 0644)
 
-	tr, _ := util.OpenSVGDRead(path)
+	tr, _ := svgd.OpenSVGDRead(path)
 	defer tr.Close()
 
-	records := make([]util.Record, 0)
-	var rec util.Record
+	records := make([]svgd.Record, 0)
+	var rec svgd.Record
 	for {
 		err := tr.ReadRecord(&rec)
 		if err != nil {
@@ -78,7 +78,7 @@ func TestCrashTruncated(t *testing.T) {
 func TestApplyDiff(t *testing.T) {
 	original := "line1\nline2\nline3\n"
 	diff := "--- previous.svg\n+++ current.svg\n@@ -1,3 +1,3 @@\n line1\n-line2\n+line2-modified\n line3\n"
-	result := util.Patch(original, diff)
+	result := svgd.Patch(original, diff)
 	expected := "line1\nline2-modified\nline3\n"
 	if result != expected {
 		t.Fatalf("apply diff:\n  got:  %q\n  want: %q", result, expected)
@@ -90,13 +90,13 @@ func TestReconstructSVG(t *testing.T) {
 	defer os.RemoveAll(dir)
 	path := filepath.Join(dir, "test.tld")
 
-	tw, _ := util.CreateSVGD(path)
+	tw, _ := svgd.CreateSVGD(path)
 	// First capture: diff from "" to "<svg><rect/></svg>"
-	diff1 := util.Diff("", "<svg><rect/><circle/></svg>\n")
+	diff1 := svgd.Diff("", "<svg><rect/><circle/></svg>\n")
 	tw.WriteCapture(100, diff1)
 	tw.Close()
 
-	lastSVG, captures, _, _ := util.ReconstructSVG(path)
+	lastSVG, captures, _, _ := svgd.ReconstructSVG(path)
 	if captures != 1 {
 		t.Fatalf("expected 1 capture, got %d", captures)
 	}
@@ -108,7 +108,7 @@ func TestReconstructSVG(t *testing.T) {
 func TestGenerateDiff(t *testing.T) {
 	a := "line1\nline2\nline3\n"
 	b := "line1\nline2-modified\nline3\n"
-	diff := util.Diff(a, b)
+	diff := svgd.Diff(a, b)
 	if !strings.Contains(diff, "line2") {
 		t.Fatalf("diff missing changed line: %q", diff)
 	}
@@ -119,15 +119,15 @@ func TestAnalyze(t *testing.T) {
 	defer os.RemoveAll(dir)
 	path := filepath.Join(dir, "test.tld")
 
-	tw, _ := util.CreateSVGD(path)
+	tw, _ := svgd.CreateSVGD(path)
 	// First capture: initial SVG
-	diff1 := util.Diff("", `<svg width="100" height="50"></svg>`)
+	diff1 := svgd.Diff("", `<svg width="100" height="50"></svg>`)
 	tw.WriteCapture(100, diff1)
 	tw.WriteCapture(200, "")
 	tw.WriteCapture(300, "")
 	tw.Close()
 
-	tr, _ := util.OpenSVGDRead(path)
+	tr, _ := svgd.OpenSVGDRead(path)
 	defer tr.Close()
 
 	ana := tr.Analyze()
@@ -148,11 +148,11 @@ func TestAppendCompat(t *testing.T) {
 	defer os.RemoveAll(dir)
 	path := filepath.Join(dir, "test.tld")
 
-	tw, _ := util.CreateSVGD(path)
+	tw, _ := svgd.CreateSVGD(path)
 	tw.WriteCapture(100, "diff1")
 	tw.Close()
 
-	tw2, lastSVG, captures, prevBytes, err := util.OpenSVGDAppend(path)
+	tw2, lastSVG, captures, prevBytes, err := svgd.OpenSVGDAppend(path)
 	if err != nil {
 		t.Fatalf("OpenTLDAppend failed: %v", err)
 	}
@@ -168,11 +168,11 @@ func TestAppendCompat(t *testing.T) {
 	tw2.WriteCapture(200, "diff2")
 	tw2.Close()
 
-	tr, _ := util.OpenSVGDRead(path)
+	tr, _ := svgd.OpenSVGDRead(path)
 	defer tr.Close()
 
-	records := make([]util.Record, 0)
-	var rec util.Record
+	records := make([]svgd.Record, 0)
+	var rec svgd.Record
 	for {
 		err := tr.ReadRecord(&rec)
 		if err != nil {
@@ -190,25 +190,25 @@ func TestAppendCompat(t *testing.T) {
 }
 
 func TestApplyEdgeCases(t *testing.T) {
-	result := util.Patch("same\n", "")
+	result := svgd.Patch("same\n", "")
 	if result != "same\n" {
 		t.Fatalf("empty diff should return original: %q", result)
 	}
 
-	result = util.Patch("same\n", "   \n")
+	result = svgd.Patch("same\n", "   \n")
 	if result != "same\n" {
 		t.Fatalf("whitespace diff should return original: %q", result)
 	}
 
 	diff := "--- previous.svg\n+++ current.svg\n@@ -1 +1,2 @@\n line1\n+line2\n"
-	result = util.Patch("line1\n", diff)
+	result = svgd.Patch("line1\n", diff)
 	if result != "line1\nline2\n" {
 		t.Fatalf("insert at end:\n  got:  %q\n  want: %q", result, "line1\nline2\n")
 	}
 }
 
 func TestResizeSVG(t *testing.T) {
-	result := util.ResizeSVG(`<svg width="100" height="200"><rect width="50"/></svg>`, 800, 200, "none")
+	result := svgd.ResizeSVG(`<svg width="100" height="200"><rect width="50"/></svg>`, 800, 200, "none")
 	expected := `<svg width="800" height="200" preserveAspectRatio="none"><rect width="50"/></svg>`
 	if result != expected {
 		t.Fatalf("replaceFirst:\n  got:  %q\n  want: %q", result, expected)

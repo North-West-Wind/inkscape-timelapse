@@ -10,7 +10,7 @@ import (
 	"syscall"
 	"time"
 
-	"codeberg.org/NorthWestWind/inkscape-timelapse/util"
+	"codeberg.org/NorthWestWind/inkscape-timelapse/svgd"
 	"github.com/godbus/dbus/v5"
 	"github.com/spf13/cobra"
 )
@@ -65,7 +65,7 @@ var (
 				os.Exit(1)
 			}
 
-			var tw *util.SVGDWriter
+			var tw *svgd.SVGDWriter
 			lastSVG := ""
 			totalBytes := 0
 
@@ -73,7 +73,7 @@ var (
 				var captures int
 				var prevBytes int
 				var err error
-				tw, lastSVG, captures, prevBytes, err = util.OpenSVGDAppend(output)
+				tw, lastSVG, captures, prevBytes, err = svgd.OpenSVGDAppend(output)
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "Failed to open recording for append: %v\n", err)
 					os.Exit(1)
@@ -82,7 +82,7 @@ var (
 				fmt.Printf("Appending to %s (%d existing captures)\n", output, captures)
 			} else {
 				var err error
-				tw, err = util.CreateSVGD(output)
+				tw, err = svgd.CreateSVGD(output)
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "Failed to create recording: %v\n", err)
 					os.Exit(1)
@@ -253,7 +253,7 @@ func checkWindowCount(conn *dbus.Conn) int {
 	return count
 }
 
-func captureTick(conn *dbus.Conn, tw *util.SVGDWriter, tlid string, lastSVG *string, lastChangeUnix *int64, totalBytes *int, curInterval *time.Duration) {
+func captureTick(conn *dbus.Conn, tw *svgd.SVGDWriter, tlid string, lastSVG *string, lastChangeUnix *int64, totalBytes *int, curInterval *time.Duration) {
 	svgRaw, err := captureSVG(conn)
 	if err != nil || svgRaw == "" {
 		return
@@ -288,7 +288,7 @@ func captureTick(conn *dbus.Conn, tw *util.SVGDWriter, tlid string, lastSVG *str
 
 	diffText := ""
 	if svgStr != *lastSVG {
-		diffText = util.Diff(*lastSVG, svgStr)
+		diffText = svgd.Diff(*lastSVG, svgStr)
 	}
 
 	ts := uint64(time.Now().UnixMilli())
@@ -297,7 +297,7 @@ func captureTick(conn *dbus.Conn, tw *util.SVGDWriter, tlid string, lastSVG *str
 		return
 	}
 	*totalBytes += len(diffText)
-	if util.IsNonEmpty(diffText) {
+	if svgd.IsNonEmpty(diffText) {
 		*lastChangeUnix = int64(ts)
 		*lastSVG = svgStr
 	}

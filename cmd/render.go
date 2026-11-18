@@ -14,7 +14,7 @@ import (
 	"syscall"
 	"time"
 
-	"codeberg.org/NorthWestWind/inkscape-timelapse/util"
+	"codeberg.org/NorthWestWind/inkscape-timelapse/svgd"
 	"github.com/spf13/cobra"
 )
 
@@ -74,7 +74,7 @@ var (
 			}
 		},
 		Run: func(cmd *cobra.Command, args []string) {
-			tr, err := util.OpenSVGDRead(args[0])
+			tr, err := svgd.OpenSVGDRead(args[0])
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Failed to open recording: %v\n", err)
 				os.Exit(1)
@@ -251,7 +251,7 @@ func isProcessRunning(pid int) bool {
 	return false
 }
 
-func renderToFFmpeg(tr *util.SVGDReader, stdin io.WriteCloser, paused *bool) int {
+func renderToFFmpeg(tr *svgd.SVGDReader, stdin io.WriteCloser, paused *bool) int {
 	jobs := make(chan frameJob, renderOptions.workers*2)
 	results := make(chan frameResult, renderOptions.workers*2)
 
@@ -268,7 +268,7 @@ func renderToFFmpeg(tr *util.SVGDReader, stdin io.WriteCloser, paused *bool) int
 				} else {
 					par = fmt.Sprintf("x%sY%s meet", xMap[renderOptions.alignX], yMap[renderOptions.alignY])
 				}
-				svg := util.ResizeSVG(job.svg, renderOptions.width, renderOptions.height, par)
+				svg := svgd.ResizeSVG(job.svg, renderOptions.width, renderOptions.height, par)
 				for *paused {
 					time.Sleep(time.Millisecond * 100)
 				}
@@ -290,14 +290,14 @@ func renderToFFmpeg(tr *util.SVGDReader, stdin io.WriteCloser, paused *bool) int
 		defer close(jobs)
 		num := 0
 		svg := ""
-		var rec util.Record
+		var rec svgd.Record
 		for {
 			err := tr.ReadRecord(&rec)
 			if err != nil {
 				break
 			}
-			svg = util.Patch(svg, rec.Diff)
-			if !util.IsNonEmpty(rec.Diff) && skipUnchanged {
+			svg = svgd.Patch(svg, rec.Diff)
+			if !svgd.IsNonEmpty(rec.Diff) && skipUnchanged {
 				continue
 			}
 			jobs <- frameJob{num: num, svg: svg}

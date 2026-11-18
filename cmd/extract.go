@@ -5,7 +5,7 @@ import (
 	"io"
 	"os"
 
-	"codeberg.org/NorthWestWind/inkscape-timelapse/util"
+	"codeberg.org/NorthWestWind/inkscape-timelapse/svgd"
 	"github.com/spf13/cobra"
 )
 
@@ -18,7 +18,7 @@ var (
 		Run: func(cmd *cobra.Command, args []string) {
 			path := args[0]
 			output := args[1]
-			tr, err := util.OpenSVGDRead(path)
+			tr, err := svgd.OpenSVGDRead(path)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error opening %s: %v\n", path, err)
 				os.Exit(1)
@@ -27,7 +27,7 @@ var (
 
 			svg := ""
 			current := 0
-			var rec util.Record
+			var rec svgd.Record
 			for {
 				err = tr.ReadRecord(&rec)
 				if err != nil {
@@ -36,7 +36,7 @@ var (
 					}
 					break
 				}
-				svg = util.Patch(svg, rec.Diff)
+				svg = svgd.Patch(svg, rec.Diff)
 				if current == extractFrame {
 					if output != "" {
 						if err := os.WriteFile(output, []byte(svg), 0644); err != nil {
