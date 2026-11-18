@@ -20,13 +20,13 @@ type Record struct {
 	Diff      string
 }
 
-type TSVGWriter struct {
+type SVGDWriter struct {
 	mu        sync.Mutex
 	f         *os.File
 	syncCount int
 }
 
-func CreateTSVG(path string) (*TSVGWriter, error) {
+func CreateSVGD(path string) (*SVGDWriter, error) {
 	f, err := os.Create(path)
 	if err != nil {
 		return nil, err
@@ -35,10 +35,10 @@ func CreateTSVG(path string) (*TSVGWriter, error) {
 		f.Close()
 		return nil, err
 	}
-	return &TSVGWriter{f: f}, nil
+	return &SVGDWriter{f: f}, nil
 }
 
-func OpenTSVGAppend(path string) (*TSVGWriter, string, int, int, error) {
+func OpenSVGDAppend(path string) (*SVGDWriter, string, int, int, error) {
 	lastSVG, count, bytes, err := ReconstructSVG(path)
 	if err != nil {
 		return nil, "", 0, 0, fmt.Errorf("reconstruct %s: %w", path, err)
@@ -48,10 +48,10 @@ func OpenTSVGAppend(path string) (*TSVGWriter, string, int, int, error) {
 	if err != nil {
 		return nil, "", 0, 0, err
 	}
-	return &TSVGWriter{f: f}, lastSVG, count, bytes, nil
+	return &SVGDWriter{f: f}, lastSVG, count, bytes, nil
 }
 
-func (tw *TSVGWriter) WriteCapture(ts uint64, diff string) error {
+func (tw *SVGDWriter) WriteCapture(ts uint64, diff string) error {
 	tw.mu.Lock()
 	defer tw.mu.Unlock()
 
@@ -91,7 +91,7 @@ func (tw *TSVGWriter) WriteCapture(ts uint64, diff string) error {
 	return nil
 }
 
-func (tw *TSVGWriter) Close() error {
+func (tw *SVGDWriter) Close() error {
 	tw.mu.Lock()
 	defer tw.mu.Unlock()
 	return tw.f.Close()

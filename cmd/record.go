@@ -65,7 +65,7 @@ var (
 				os.Exit(1)
 			}
 
-			var tw *util.TSVGWriter
+			var tw *util.SVGDWriter
 			lastSVG := ""
 			totalBytes := 0
 
@@ -73,7 +73,7 @@ var (
 				var captures int
 				var prevBytes int
 				var err error
-				tw, lastSVG, captures, prevBytes, err = util.OpenTSVGAppend(output)
+				tw, lastSVG, captures, prevBytes, err = util.OpenSVGDAppend(output)
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "Failed to open recording for append: %v\n", err)
 					os.Exit(1)
@@ -82,7 +82,7 @@ var (
 				fmt.Printf("Appending to %s (%d existing captures)\n", output, captures)
 			} else {
 				var err error
-				tw, err = util.CreateTSVG(output)
+				tw, err = util.CreateSVGD(output)
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "Failed to create recording: %v\n", err)
 					os.Exit(1)
@@ -253,7 +253,7 @@ func checkWindowCount(conn *dbus.Conn) int {
 	return count
 }
 
-func captureTick(conn *dbus.Conn, tw *util.TSVGWriter, tlid string, lastSVG *string, lastChangeUnix *int64, totalBytes *int, curInterval *time.Duration) {
+func captureTick(conn *dbus.Conn, tw *util.SVGDWriter, tlid string, lastSVG *string, lastChangeUnix *int64, totalBytes *int, curInterval *time.Duration) {
 	svgRaw, err := captureSVG(conn)
 	if err != nil || svgRaw == "" {
 		return
@@ -276,8 +276,8 @@ func captureTick(conn *dbus.Conn, tw *util.TSVGWriter, tlid string, lastSVG *str
 	}
 
 	// Recording window focused: restore user interval
-	if *curInterval != interval {
-		*curInterval = interval
+	if *curInterval != time.Duration(interval*float64(time.Second)) {
+		*curInterval = time.Duration(interval * float64(time.Second))
 		fmt.Fprintf(os.Stderr, "\nRecording window refocused, restoring interval\n")
 	}
 

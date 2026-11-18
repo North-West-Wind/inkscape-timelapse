@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"regexp"
+	"strings"
 )
 
 var (
@@ -23,7 +24,7 @@ func svgSize(svg string) (int, int) {
 }
 
 func ReconstructSVG(path string) (lastSVG string, captures int, totalBytes int, err error) {
-	tr, err := OpenTLDRead(path)
+	tr, err := OpenSVGDRead(path)
 	if err != nil {
 		return "", 0, 0, err
 	}
@@ -42,7 +43,7 @@ func ReconstructSVG(path string) (lastSVG string, captures int, totalBytes int, 
 
 		captures++
 		totalBytes += len(rec.Diff)
-		if isNonEmpty(rec.Diff) {
+		if strings.TrimSpace(rec.Diff) != "" {
 			svg = ApplyDiff(svg, rec.Diff)
 		}
 	}

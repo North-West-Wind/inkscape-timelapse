@@ -6,23 +6,25 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"codeberg.org/NorthWestWind/inkscape-timelapse/util"
 )
 
-func TestTLDRoundtrip(t *testing.T) {
+func TestSVGDRoundtrip(t *testing.T) {
 	dir, _ := os.MkdirTemp("", "tld-*")
 	defer os.RemoveAll(dir)
 	path := filepath.Join(dir, "test.tld")
 
-	tw, _ := CreateTLD(path)
+	tw, _ := util.CreateSVGD(path)
 	tw.WriteCapture(100, "diff1")
 	tw.WriteCapture(200, "diff2")
 	tw.Close()
 
-	tr, _ := OpenTLDRead(path)
+	tr, _ := util.OpenSVGDRead(path)
 	defer tr.Close()
 
-	records := make([]Record, 0)
-	var rec Record
+	records := make([]util.Record, 0)
+	var rec util.Record
 	for {
 		err := tr.ReadRecord(&rec)
 		if err != nil {
@@ -37,8 +39,8 @@ func TestTLDRoundtrip(t *testing.T) {
 	if records[0].Diff != "diff1" {
 		t.Fatalf("bad diff1: %q", records[0].Diff)
 	}
-	if records[1].TS != 200 {
-		t.Fatalf("bad ts2: %d", records[1].TS)
+	if records[1].Timestamp != 200 {
+		t.Fatalf("bad ts2: %d", records[1].Timestamp)
 	}
 }
 
@@ -47,7 +49,7 @@ func TestCrashTruncated(t *testing.T) {
 	defer os.RemoveAll(dir)
 	path := filepath.Join(dir, "test.tld")
 
-	tw, _ := CreateTLD(path)
+	tw, _ := util.CreateSVGD(path)
 	tw.WriteCapture(100, "diff1")
 	tw.WriteCapture(200, "diff2")
 	tw.Close()
@@ -56,11 +58,11 @@ func TestCrashTruncated(t *testing.T) {
 	data, _ := os.ReadFile(path)
 	os.WriteFile(path, data[:fi.Size()-10], 0644)
 
-	tr, _ := OpenTLDRead(path)
+	tr, _ := util.OpenSVGDRead(path)
 	defer tr.Close()
 
-	records := make([]Record, 0)
-	var rec Record
+	records := make([]util.Record, 0)
+	var rec util.Record
 	for {
 		err := tr.ReadRecord(&rec)
 		if err != nil {
@@ -77,7 +79,7 @@ func TestCrashTruncated(t *testing.T) {
 func TestApplyDiff(t *testing.T) {
 	original := "line1\nline2\nline3\n"
 	diff := "--- previous.svg\n+++ current.svg\n@@ -1,3 +1,3 @@\n line1\n-line2\n+line2-modified\n line3\n"
-	result := ApplyDiff(original, diff)
+	result := util.ApplyDiff(original, diff)
 	expected := "line1\nline2-modified\nline3\n"
 	if result != expected {
 		t.Fatalf("apply diff:\n  got:  %q\n  want: %q", result, expected)
@@ -89,13 +91,13 @@ func TestReconstructSVG(t *testing.T) {
 	defer os.RemoveAll(dir)
 	path := filepath.Join(dir, "test.tld")
 
-	tw, _ := CreateTLD(path)
+	tw, _ := util.CreateSVGD(path)
 	// First capture: diff from "" to "<svg><rect/></svg>"
-	diff1 := generateDiff("", "<svg><rect/><circle/></svg>\n")
+	diff1 := util.GenerateDiff("", "<svg><rect/><circle/></svg>\n")
 	tw.WriteCapture(100, diff1)
 	tw.Close()
 
-	lastSVG, captures, _, _ := ReconstructSVG(path)
+	lastSVG, captures, _, _ := util.ReconstructSVG(path)
 	if captures != 1 {
 		t.Fatalf("expected 1 capture, got %d", captures)
 	}
@@ -107,7 +109,7 @@ func TestReconstructSVG(t *testing.T) {
 func TestGenerateDiff(t *testing.T) {
 	a := "line1\nline2\nline3\n"
 	b := "line1\nline2-modified\nline3\n"
-	diff := generateDiff(a, b)
+	diff := util.GenerateDiff(a, b)
 	if !strings.Contains(diff, "line2") {
 		t.Fatalf("diff missing changed line: %q", diff)
 	}
@@ -118,27 +120,27 @@ func TestAnalyze(t *testing.T) {
 	defer os.RemoveAll(dir)
 	path := filepath.Join(dir, "test.tld")
 
-	tw, _ := CreateTLD(path)
+	tw, _ := util.CreateSVGD(path)
 	// First capture: initial SVG
-	diff1 := generateDiff("", `<svg width="100" height="50"></svg>`)
+	diff1 := util.GenerateDiff("", `<svg width="100" height="50"></svg>`)
 	tw.WriteCapture(100, diff1)
 	tw.WriteCapture(200, "")
 	tw.WriteCapture(300, "")
 	tw.Close()
 
-	tr, _ := OpenTLDRead(path)
+	tr, _ := util.OpenSVGDRead(path)
 	defer tr.Close()
 
 	ana := tr.Analyze()
-	if ana.count != 3 {
-		t.Fatalf("expected 3 frames, got %d", ana.count)
+	if ana.Count != 3 {
+		t.Fatalf("expected 3 frames, got %d", ana.Count)
 	}
-	if ana.initW != 100 || ana.initH != 50 {
-		t.Fatalf("bad size: %dx%d", ana.initW, ana.initH)
+	if ana.InitW != 100 || ana.InitH != 50 {
+		t.Fatalf("bad size: %dx%d", ana.InitW, ana.InitH)
 	}
 
-	if ana.count-ana.emptyCount != 1 {
-		t.Fatalf("expected 1 frame with skip, got %d", ana.count-ana.emptyCount)
+	if ana.Count-ana.EmptyCount != 1 {
+		t.Fatalf("expected 1 frame with skip, got %d", ana.Count-ana.EmptyCount)
 	}
 }
 
@@ -147,11 +149,11 @@ func TestAppendCompat(t *testing.T) {
 	defer os.RemoveAll(dir)
 	path := filepath.Join(dir, "test.tld")
 
-	tw, _ := CreateTLD(path)
+	tw, _ := util.CreateSVGD(path)
 	tw.WriteCapture(100, "diff1")
 	tw.Close()
 
-	tw2, lastSVG, captures, prevBytes, err := OpenTLDAppend(path)
+	tw2, lastSVG, captures, prevBytes, err := util.OpenSVGDAppend(path)
 	if err != nil {
 		t.Fatalf("OpenTLDAppend failed: %v", err)
 	}
@@ -167,11 +169,11 @@ func TestAppendCompat(t *testing.T) {
 	tw2.WriteCapture(200, "diff2")
 	tw2.Close()
 
-	tr, _ := OpenTLDRead(path)
+	tr, _ := util.OpenSVGDRead(path)
 	defer tr.Close()
 
-	records := make([]Record, 0)
-	var rec Record
+	records := make([]util.Record, 0)
+	var rec util.Record
 	for {
 		err := tr.ReadRecord(&rec)
 		if err != nil {
@@ -189,18 +191,18 @@ func TestAppendCompat(t *testing.T) {
 }
 
 func TestApplyEdgeCases(t *testing.T) {
-	result := ApplyDiff("same\n", "")
+	result := util.ApplyDiff("same\n", "")
 	if result != "same\n" {
 		t.Fatalf("empty diff should return original: %q", result)
 	}
 
-	result = ApplyDiff("same\n", "   \n")
+	result = util.ApplyDiff("same\n", "   \n")
 	if result != "same\n" {
 		t.Fatalf("whitespace diff should return original: %q", result)
 	}
 
 	diff := "--- previous.svg\n+++ current.svg\n@@ -1 +1,2 @@\n line1\n+line2\n"
-	result = ApplyDiff("line1\n", diff)
+	result = util.ApplyDiff("line1\n", diff)
 	if result != "line1\nline2\n" {
 		t.Fatalf("insert at end:\n  got:  %q\n  want: %q", result, "line1\nline2\n")
 	}

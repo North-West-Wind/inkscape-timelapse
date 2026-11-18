@@ -9,13 +9,11 @@ import (
 	"os"
 )
 
-// ── Reader ────────────────────────────────────────────────────────
-
-type TLDReader struct {
+type SVGDReader struct {
 	f *os.File
 }
 
-func OpenTLDRead(path string) (*TLDReader, error) {
+func OpenSVGDRead(path string) (*SVGDReader, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -28,10 +26,10 @@ func OpenTLDRead(path string) (*TLDReader, error) {
 	if n < 4 || string(header) != Magic {
 		return nil, fmt.Errorf("invalid .tld magic")
 	}
-	return &TLDReader{f: f}, nil
+	return &SVGDReader{f: f}, nil
 }
 
-func (tr *TLDReader) ReadRecord(record *Record) error {
+func (tr *SVGDReader) ReadRecord(record *Record) error {
 	recLenB := make([]byte, 4)
 	n, err := tr.f.Read(recLenB)
 	if err != nil {
@@ -68,6 +66,6 @@ func (tr *TLDReader) ReadRecord(record *Record) error {
 	return nil
 }
 
-func (tr *TLDReader) Close() error {
+func (tr *SVGDReader) Close() error {
 	return tr.f.Close()
 }
