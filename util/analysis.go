@@ -2,21 +2,20 @@ package util
 
 import (
 	"io"
-	"strings"
 )
 
-type resChange struct {
-	FromW, FromH int
-	ToW, ToH     int
-	Count        int
+type ResolutionChange struct {
+	FromWidth, FromHeight int
+	ToWidth, ToHeight     int
+	Frame                 int
 }
 
 type Analysis struct {
-	Count, EmptyCount int
-	InitW, InitH      int
-	MaxW, MaxH        int
-	MinW, MinH        int
-	ResChanges        []resChange
+	Frames, EmptyFrames         int
+	InitialWidth, InitialHeight int
+	MaxWidth, MaxHeight         int
+	MinWidth, MinHeight         int
+	ResolutionChanges           []ResolutionChange
 }
 
 func (tr *SVGDReader) Analyze() Analysis {
@@ -25,54 +24,54 @@ func (tr *SVGDReader) Analyze() Analysis {
 	var rec Record
 	var prevW, prevH int
 
-	a.ResChanges = make([]resChange, 0)
+	a.ResolutionChanges = make([]ResolutionChange, 0)
 
 	for {
 		err := tr.ReadRecord(&rec)
 		if err != nil {
 			break
 		}
-		if strings.TrimSpace(rec.Diff) != "" {
-			svg = ApplyDiff(svg, rec.Diff)
+		if IsNonEmpty(rec.Diff) {
+			svg = Patch(svg, rec.Diff)
 		} else {
-			a.EmptyCount++
+			a.EmptyFrames++
 		}
-		if a.Count == 0 {
+		if a.Frames == 0 {
 			w, h := svgSize(svg)
 			if w > 0 && h > 0 {
-				a.InitW, a.InitH = w, h
-				a.MaxW, a.MaxH = w, h
-				a.MinW, a.MinH = w, h
+				a.InitialWidth, a.InitialHeight = w, h
+				a.MaxWidth, a.MaxHeight = w, h
+				a.MinWidth, a.MinHeight = w, h
 			}
 		} else {
 			w, h := svgSize(svg)
 			if w != prevW || h != prevH {
-				a.ResChanges = append(a.ResChanges, resChange{
-					FromW: prevW,
-					FromH: prevH,
-					ToW:   w,
-					ToH:   h,
-					Count: a.Count,
+				a.ResolutionChanges = append(a.ResolutionChanges, ResolutionChange{
+					FromWidth:  prevW,
+					FromHeight: prevH,
+					ToWidth:    w,
+					ToHeight:   h,
+					Frame:      a.Frames,
 				})
 				prevW = w
 				prevH = h
 			}
 			if w > 0 && h > 0 {
-				if w > a.MaxW {
-					a.MaxW = w
+				if w > a.MaxWidth {
+					a.MaxWidth = w
 				}
-				if h > a.MaxH {
-					a.MaxH = h
+				if h > a.MaxHeight {
+					a.MaxHeight = h
 				}
-				if w < a.MinW {
-					a.MinW = w
+				if w < a.MinWidth {
+					a.MinWidth = w
 				}
-				if h < a.MinH {
-					a.MinH = h
+				if h < a.MinHeight {
+					a.MinHeight = h
 				}
 			}
 		}
-		a.Count++
+		a.Frames++
 	}
 
 	// Be kind, rewind

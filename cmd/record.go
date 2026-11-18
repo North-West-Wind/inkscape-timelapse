@@ -288,7 +288,7 @@ func captureTick(conn *dbus.Conn, tw *util.SVGDWriter, tlid string, lastSVG *str
 
 	diffText := ""
 	if svgStr != *lastSVG {
-		diffText = util.GenerateDiff(*lastSVG, svgStr)
+		diffText = util.Diff(*lastSVG, svgStr)
 	}
 
 	ts := uint64(time.Now().UnixMilli())

@@ -5,7 +5,7 @@ import (
 	"io"
 	"os"
 	"regexp"
-	"strings"
+	"strconv"
 )
 
 var (
@@ -20,7 +20,30 @@ func svgSize(svg string) (int, int) {
 	if wm == nil || hm == nil {
 		return 0, 0
 	}
-	return Atoi(wm[1]), Atoi(hm[1])
+	width, _ := strconv.ParseInt(wm[1], 10, 32)
+	height, _ := strconv.ParseInt(hm[1], 10, 32)
+	return int(width), int(height)
+}
+
+func replaceFirst(re *regexp.Regexp, s, template string) string {
+	idx := re.FindStringIndex(s)
+	if idx == nil {
+		return s
+	}
+	match := s[idx[0]:idx[1]]
+	replacement := re.ReplaceAllString(match, template)
+	return s[:idx[0]] + replacement + s[idx[1]:]
+}
+
+func ResizeSVG(svg string, width, height int, par string) string {
+	svg = parRE.ReplaceAllString(svg, "")
+	svg = replaceFirst(wRE, svg, fmt.Sprintf(`width="%d"`, width))
+	svg = replaceFirst(hRE, svg, fmt.Sprintf(`height="%d"`, height))
+
+	svg = parRE.ReplaceAllString(svg, "")
+	reSvg := regexp.MustCompile(`(<svg[^>]*)>`)
+	svg = replaceFirst(reSvg, svg, fmt.Sprintf(`$1 preserveAspectRatio="%s">`, par))
+	return svg
 }
 
 func ReconstructSVG(path string) (lastSVG string, captures int, totalBytes int, err error) {
@@ -43,9 +66,7 @@ func ReconstructSVG(path string) (lastSVG string, captures int, totalBytes int, 
 
 		captures++
 		totalBytes += len(rec.Diff)
-		if strings.TrimSpace(rec.Diff) != "" {
-			svg = ApplyDiff(svg, rec.Diff)
-		}
+		svg = Patch(svg, rec.Diff)
 	}
 	return svg, captures, totalBytes, nil
 }

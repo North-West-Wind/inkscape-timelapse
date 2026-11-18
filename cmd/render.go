@@ -36,6 +36,9 @@ var (
 	hRE   = regexp.MustCompile(`height="(\d+(?:\.\d+)?)"`)
 	parRE = regexp.MustCompile(`\s*preserveAspectRatio="[^"]*"`)
 
+	xMap = map[string]string{"left": "Min", "center": "Mid", "right": "Max"}
+	yMap = map[string]string{"top": "Min", "center": "Mid", "bottom": "Max"}
+
 	renderOptions struct {
 		framerate        float64
 		output           string
@@ -79,9 +82,9 @@ var (
 			defer tr.Close()
 
 			ana := tr.Analyze()
-			relevantFrames := ana.Count
+			relevantFrames := ana.Frames
 			if renderOptions.skipUnchanged {
-				relevantFrames -= ana.EmptyCount
+				relevantFrames -= ana.EmptyFrames
 			}
 			if relevantFrames == 0 {
 				fmt.Fprintln(os.Stderr, "No frames found.")
@@ -91,11 +94,11 @@ var (
 			if renderOptions.width <= 0 || renderOptions.height <= 0 {
 				switch renderOptions.resolutionPolicy {
 				case "max":
-					renderOptions.width, renderOptions.height = ana.MaxW, ana.MaxH
+					renderOptions.width, renderOptions.height = ana.MaxWidth, ana.MaxHeight
 				case "min":
-					renderOptions.width, renderOptions.height = ana.MinW, ana.MinH
+					renderOptions.width, renderOptions.height = ana.MinWidth, ana.MinHeight
 				default:
-					renderOptions.width, renderOptions.height = ana.InitW, ana.InitH
+					renderOptions.width, renderOptions.height = ana.InitialWidth, ana.InitialHeight
 				}
 			}
 
@@ -212,37 +215,6 @@ func init() {
 	renderCmd.Flags().IntVar(&renderOptions.workers, "workers", runtime.NumCPU(), "Render workers")
 }
 
-func replaceFirst(re *regexp.Regexp, s, template string) string {
-	idx := re.FindStringIndex(s)
-	if idx == nil {
-		return s
-	}
-	match := s[idx[0]:idx[1]]
-	replacement := re.ReplaceAllString(match, template)
-	return s[:idx[0]] + replacement + s[idx[1]:]
-}
-
-func setCanvas(svg string, cw, ch int) string {
-	svg = parRE.ReplaceAllString(svg, "")
-	svg = replaceFirst(wRE, svg, fmt.Sprintf(`width="%d"`, cw))
-	svg = replaceFirst(hRE, svg, fmt.Sprintf(`height="%d"`, ch))
-
-	xMap := map[string]string{"left": "Min", "center": "Mid", "right": "Max"}
-	yMap := map[string]string{"top": "Min", "center": "Mid", "bottom": "Max"}
-
-	var par string
-	if renderOptions.stretch {
-		par = "none"
-	} else {
-		par = fmt.Sprintf("x%sY%s meet", xMap[renderOptions.alignX], yMap[renderOptions.alignY])
-	}
-
-	svg = parRE.ReplaceAllString(svg, "")
-	reSvg := regexp.MustCompile(`(<svg[^>]*>)`)
-	svg = replaceFirst(reSvg, svg, fmt.Sprintf(`$1 preserveAspectRatio="%s"`, par))
-	return svg
-}
-
 func svgToPNG(svgData string) ([]byte, error) {
 	cmd := exec.Command("inkscape", "--pipe", "--export-type=png")
 	cmd.Stdin = strings.NewReader(svgData)
@@ -290,7 +262,13 @@ func renderToFFmpeg(tr *util.SVGDReader, stdin io.WriteCloser, paused *bool) int
 		go func() {
 			defer wg.Done()
 			for job := range jobs {
-				svg := setCanvas(job.svg, renderOptions.width, renderOptions.height)
+				var par string
+				if renderOptions.stretch {
+					par = "none"
+				} else {
+					par = fmt.Sprintf("x%sY%s meet", xMap[renderOptions.alignX], yMap[renderOptions.alignY])
+				}
+				svg := util.ResizeSVG(job.svg, renderOptions.width, renderOptions.height, par)
 				for *paused {
 					time.Sleep(time.Millisecond * 100)
 				}
@@ -318,10 +296,8 @@ func renderToFFmpeg(tr *util.SVGDReader, stdin io.WriteCloser, paused *bool) int
 			if err != nil {
 				break
 			}
-			if strings.TrimSpace(rec.Diff) != "" {
-				svg = util.ApplyDiff(svg, rec.Diff)
-			}
-			if strings.TrimSpace(rec.Diff) == "" && skipUnchanged {
+			svg = util.Patch(svg, rec.Diff)
+			if !util.IsNonEmpty(rec.Diff) && skipUnchanged {
 				continue
 			}
 			jobs <- frameJob{num: num, svg: svg}

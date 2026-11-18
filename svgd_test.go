@@ -3,7 +3,6 @@ package main
 import (
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"testing"
 
@@ -79,7 +78,7 @@ func TestCrashTruncated(t *testing.T) {
 func TestApplyDiff(t *testing.T) {
 	original := "line1\nline2\nline3\n"
 	diff := "--- previous.svg\n+++ current.svg\n@@ -1,3 +1,3 @@\n line1\n-line2\n+line2-modified\n line3\n"
-	result := util.ApplyDiff(original, diff)
+	result := util.Patch(original, diff)
 	expected := "line1\nline2-modified\nline3\n"
 	if result != expected {
 		t.Fatalf("apply diff:\n  got:  %q\n  want: %q", result, expected)
@@ -93,7 +92,7 @@ func TestReconstructSVG(t *testing.T) {
 
 	tw, _ := util.CreateSVGD(path)
 	// First capture: diff from "" to "<svg><rect/></svg>"
-	diff1 := util.GenerateDiff("", "<svg><rect/><circle/></svg>\n")
+	diff1 := util.Diff("", "<svg><rect/><circle/></svg>\n")
 	tw.WriteCapture(100, diff1)
 	tw.Close()
 
@@ -109,7 +108,7 @@ func TestReconstructSVG(t *testing.T) {
 func TestGenerateDiff(t *testing.T) {
 	a := "line1\nline2\nline3\n"
 	b := "line1\nline2-modified\nline3\n"
-	diff := util.GenerateDiff(a, b)
+	diff := util.Diff(a, b)
 	if !strings.Contains(diff, "line2") {
 		t.Fatalf("diff missing changed line: %q", diff)
 	}
@@ -122,7 +121,7 @@ func TestAnalyze(t *testing.T) {
 
 	tw, _ := util.CreateSVGD(path)
 	// First capture: initial SVG
-	diff1 := util.GenerateDiff("", `<svg width="100" height="50"></svg>`)
+	diff1 := util.Diff("", `<svg width="100" height="50"></svg>`)
 	tw.WriteCapture(100, diff1)
 	tw.WriteCapture(200, "")
 	tw.WriteCapture(300, "")
@@ -132,15 +131,15 @@ func TestAnalyze(t *testing.T) {
 	defer tr.Close()
 
 	ana := tr.Analyze()
-	if ana.Count != 3 {
-		t.Fatalf("expected 3 frames, got %d", ana.Count)
+	if ana.Frames != 3 {
+		t.Fatalf("expected 3 frames, got %d", ana.Frames)
 	}
-	if ana.InitW != 100 || ana.InitH != 50 {
-		t.Fatalf("bad size: %dx%d", ana.InitW, ana.InitH)
+	if ana.InitialWidth != 100 || ana.InitialHeight != 50 {
+		t.Fatalf("bad size: %dx%d", ana.InitialWidth, ana.InitialHeight)
 	}
 
-	if ana.Count-ana.EmptyCount != 1 {
-		t.Fatalf("expected 1 frame with skip, got %d", ana.Count-ana.EmptyCount)
+	if ana.Frames-ana.EmptyFrames != 1 {
+		t.Fatalf("expected 1 frame with skip, got %d", ana.Frames-ana.EmptyFrames)
 	}
 }
 
@@ -191,27 +190,26 @@ func TestAppendCompat(t *testing.T) {
 }
 
 func TestApplyEdgeCases(t *testing.T) {
-	result := util.ApplyDiff("same\n", "")
+	result := util.Patch("same\n", "")
 	if result != "same\n" {
 		t.Fatalf("empty diff should return original: %q", result)
 	}
 
-	result = util.ApplyDiff("same\n", "   \n")
+	result = util.Patch("same\n", "   \n")
 	if result != "same\n" {
 		t.Fatalf("whitespace diff should return original: %q", result)
 	}
 
 	diff := "--- previous.svg\n+++ current.svg\n@@ -1 +1,2 @@\n line1\n+line2\n"
-	result = util.ApplyDiff("line1\n", diff)
+	result = util.Patch("line1\n", diff)
 	if result != "line1\nline2\n" {
 		t.Fatalf("insert at end:\n  got:  %q\n  want: %q", result, "line1\nline2\n")
 	}
 }
 
-func TestReplaceFirst(t *testing.T) {
-	re := regexp.MustCompile(`width="(\d+(?:\.\d+)?)"`)
-	result := replaceFirst(re, `<svg width="100" height="200"><rect width="50"/></svg>`, `width="800"`)
-	expected := `<svg width="800" height="200"><rect width="50"/></svg>`
+func TestResizeSVG(t *testing.T) {
+	result := util.ResizeSVG(`<svg width="100" height="200"><rect width="50"/></svg>`, 800, 200, "none")
+	expected := `<svg width="800" height="200" preserveAspectRatio="none"><rect width="50"/></svg>`
 	if result != expected {
 		t.Fatalf("replaceFirst:\n  got:  %q\n  want: %q", result, expected)
 	}

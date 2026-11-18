@@ -1,21 +1,18 @@
 package util
 
 import (
+	"bytes"
 	"fmt"
-	"regexp"
+	"os"
 	"strings"
 
+	"github.com/bluekeyes/go-gitdiff/gitdiff"
 	"github.com/hexops/gotextdiff"
 	"github.com/hexops/gotextdiff/myers"
 	"github.com/hexops/gotextdiff/span"
 )
 
-var hunkRe = regexp.MustCompile(`^@@ -(\d+),?(\d*) \+(\d+),?(\d*) @@`)
-var skipRe = regexp.MustCompile(`^(---|\+\+\+)`)
-
-// ── Diff generation (gotextdiff) ─────────────────────────────────
-
-func GenerateDiff(aStr, bStr string) string {
+func Diff(aStr, bStr string) string {
 	if aStr == bStr {
 		return ""
 	}
@@ -25,90 +22,22 @@ func GenerateDiff(aStr, bStr string) string {
 	return fmt.Sprint(u)
 }
 
-// ── Diff application ──────────────────────────────────────────────
-
-func ApplyDiff(original, diffText string) string {
-	if !IsNonEmpty(diffText) {
+func Patch(original, diff string) string {
+	if !IsNonEmpty(diff) {
 		return original
 	}
 
-	lines := SplitKeep(original)
-	dl := SplitKeep(diffText)
-	var hunks []hunk
-
-	i := 0
-	for i < len(dl) {
-		m := hunkRe.FindStringSubmatch(dl[i])
-		if m != nil {
-			oldStart := Atoi(m[1])
-			oldCount := 1
-			if m[2] != "" {
-				oldCount = Atoi(m[2])
-			}
-			i++
-			var body []string
-			for i < len(dl) && !hunkRe.MatchString(dl[i]) && !skipRe.MatchString(dl[i]) {
-				body = append(body, dl[i])
-				i++
-			}
-			hunks = append(hunks, hunk{oldStart, oldCount, body})
-		} else {
-			i++
-		}
+	files, _, err := gitdiff.Parse(strings.NewReader(diff))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to parse diff: %v", err)
+		os.Exit(1)
 	}
 
-	for hi := len(hunks) - 1; hi >= 0; hi-- {
-		h := hunks[hi]
-		startIdx := h.oldStart - 1
-		if startIdx < 0 {
-			startIdx = 0
-		}
-		var newContent []string
-		for _, hl := range h.body {
-			if hl == "" {
-				continue
-			}
-			if !strings.HasPrefix(hl, "-") {
-				newContent = append(newContent, hl[1:])
-			}
-		}
-		end := startIdx + h.oldCount
-		if end > len(lines) {
-			end = len(lines)
-		}
-		lines = append(lines[:startIdx], append(newContent, lines[end:]...)...)
+	var output bytes.Buffer
+	if err = gitdiff.Apply(&output, strings.NewReader(original), files[0]); err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to apply diff: %v", err)
+		os.Exit(1)
 	}
 
-	return strings.Join(lines, "")
-}
-
-// ── Helpers ───────────────────────────────────────────────────────
-
-type hunk struct {
-	oldStart int
-	oldCount int
-	body     []string
-}
-
-func IsNonEmpty(s string) bool {
-	return strings.TrimSpace(s) != ""
-}
-
-func SplitKeep(s string) []string {
-	if s == "" {
-		return nil
-	}
-	return strings.SplitAfter(s, "\n")
-}
-
-func Atoi(s string) int {
-	n := 0
-	for _, c := range s {
-		if c >= '0' && c <= '9' {
-			n = n*10 + int(c-'0')
-		} else {
-			break
-		}
-	}
-	return n
+	return output.String()
 }

@@ -25,16 +25,16 @@ var (
 			ana := tr.Analyze()
 
 			fmt.Printf("Frames:\n")
-			fmt.Printf("  total:              %d\n", ana.Count)
-			fmt.Printf("  skip-unchanged:     %d\n", ana.Count-ana.EmptyCount)
+			fmt.Printf("  total:              %d\n", ana.Frames)
+			fmt.Printf("  skip-unchanged:     %d\n", ana.Frames-ana.EmptyFrames)
 			fmt.Printf("Resolution:\n")
-			fmt.Printf("  initial:            %dx%d\n", ana.InitW, ana.InitH)
-			fmt.Printf("  min:                %dx%d\n", ana.MinW, ana.MinH)
-			fmt.Printf("  max:                %dx%d\n", ana.MaxW, ana.MaxH)
-			if len(ana.ResChanges) > 1 {
+			fmt.Printf("  initial:            %dx%d\n", ana.InitialWidth, ana.InitialHeight)
+			fmt.Printf("  min:                %dx%d\n", ana.MinWidth, ana.MinHeight)
+			fmt.Printf("  max:                %dx%d\n", ana.MaxWidth, ana.MaxHeight)
+			if len(ana.ResolutionChanges) > 1 {
 				fmt.Printf("Resolution changes:\n")
-				for _, resChange := range ana.ResChanges {
-					fmt.Printf("  at %d: %dx%d->%dx%d\n", resChange.Count, resChange.FromW, resChange.FromH, resChange.ToW, resChange.ToH)
+				for _, resChange := range ana.ResolutionChanges {
+					fmt.Printf("  at %d: %dx%d->%dx%d\n", resChange.Frame, resChange.FromWidth, resChange.FromHeight, resChange.ToWidth, resChange.ToHeight)
 				}
 			}
 		},

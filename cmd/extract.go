@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"strings"
 
 	"codeberg.org/NorthWestWind/inkscape-timelapse/util"
 	"github.com/spf13/cobra"
@@ -37,9 +36,7 @@ var (
 					}
 					break
 				}
-				if strings.TrimSpace(rec.Diff) != "" {
-					svg = util.ApplyDiff(svg, rec.Diff)
-				}
+				svg = util.Patch(svg, rec.Diff)
 				if current == extractFrame {
 					if output != "" {
 						if err := os.WriteFile(output, []byte(svg), 0644); err != nil {
