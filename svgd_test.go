@@ -10,9 +10,9 @@ import (
 )
 
 func TestSVGDRoundtrip(t *testing.T) {
-	dir, _ := os.MkdirTemp("", "tld-*")
+	dir, _ := os.MkdirTemp("", "svgd-*")
 	defer os.RemoveAll(dir)
-	path := filepath.Join(dir, "test.tld")
+	path := filepath.Join(dir, "test.svgd")
 
 	tw, _ := svgd.CreateSVGD(path)
 	tw.WriteCapture(100, "diff1")
@@ -44,9 +44,9 @@ func TestSVGDRoundtrip(t *testing.T) {
 }
 
 func TestCrashTruncated(t *testing.T) {
-	dir, _ := os.MkdirTemp("", "tld-*")
+	dir, _ := os.MkdirTemp("", "svgd")
 	defer os.RemoveAll(dir)
-	path := filepath.Join(dir, "test.tld")
+	path := filepath.Join(dir, "test.svgd")
 
 	tw, _ := svgd.CreateSVGD(path)
 	tw.WriteCapture(100, "diff1")
@@ -86,9 +86,9 @@ func TestApplyDiff(t *testing.T) {
 }
 
 func TestReconstructSVG(t *testing.T) {
-	dir, _ := os.MkdirTemp("", "tld-*")
+	dir, _ := os.MkdirTemp("", "svgd-*")
 	defer os.RemoveAll(dir)
-	path := filepath.Join(dir, "test.tld")
+	path := filepath.Join(dir, "test.svgd")
 
 	tw, _ := svgd.CreateSVGD(path)
 	// First capture: diff from "" to "<svg><rect/></svg>"
@@ -96,12 +96,16 @@ func TestReconstructSVG(t *testing.T) {
 	tw.WriteCapture(100, diff1)
 	tw.Close()
 
-	lastSVG, captures, _, _ := svgd.ReconstructSVG(path)
-	if captures != 1 {
-		t.Fatalf("expected 1 capture, got %d", captures)
+	sr, _ := svgd.OpenSVGDRead(path)
+	cr := svgd.NewCheckpointReader(sr)
+	svg, _, _ := cr.ReadSVG(int(^uint(0) >> 1))
+	sr.Close()
+
+	if cr.Position() != 1 {
+		t.Fatalf("expected 1 capture, got %d", cr.Position())
 	}
-	if lastSVG != "<svg><rect/><circle/></svg>\n" {
-		t.Fatalf("reconstructed: %q", lastSVG)
+	if svg != "<svg><rect/><circle/></svg>\n" {
+		t.Fatalf("reconstructed: %q", svg)
 	}
 }
 
@@ -115,9 +119,9 @@ func TestGenerateDiff(t *testing.T) {
 }
 
 func TestAnalyze(t *testing.T) {
-	dir, _ := os.MkdirTemp("", "tld-*")
+	dir, _ := os.MkdirTemp("", "svgd-*")
 	defer os.RemoveAll(dir)
-	path := filepath.Join(dir, "test.tld")
+	path := filepath.Join(dir, "test.svgd")
 
 	tw, _ := svgd.CreateSVGD(path)
 	// First capture: initial SVG
@@ -144,23 +148,20 @@ func TestAnalyze(t *testing.T) {
 }
 
 func TestAppendCompat(t *testing.T) {
-	dir, _ := os.MkdirTemp("", "tld-*")
+	dir, _ := os.MkdirTemp("", "svgd-*")
 	defer os.RemoveAll(dir)
-	path := filepath.Join(dir, "test.tld")
+	path := filepath.Join(dir, "test.svgd")
 
 	tw, _ := svgd.CreateSVGD(path)
 	tw.WriteCapture(100, "diff1")
 	tw.Close()
 
-	tw2, lastSVG, captures, prevBytes, err := svgd.OpenSVGDAppend(path)
+	tw2, lastSVG, captures, err := svgd.OpenSVGDAppend(path)
 	if err != nil {
-		t.Fatalf("OpenTLDAppend failed: %v", err)
+		t.Fatalf("OpenSVGDAppend failed: %v", err)
 	}
 	if captures != 1 {
 		t.Fatalf("expected 1 capture, got %d", captures)
-	}
-	if prevBytes != 5 {
-		t.Fatalf("expected 5 previous bytes (len('diff1')), got %d", prevBytes)
 	}
 	if lastSVG != "" {
 		t.Fatalf("lastSVG mismatch: %q", lastSVG)

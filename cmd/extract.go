@@ -25,34 +25,25 @@ var (
 			}
 			defer tr.Close()
 
-			svg := ""
-			current := 0
-			var rec svgd.Record
-			for {
-				err = tr.ReadRecord(&rec)
-				if err != nil {
-					if err != io.EOF {
-						fmt.Fprintf(os.Stderr, "Error reading %s at frame %d: %v\n", path, current, err)
-					}
-					break
+			cr := svgd.NewCheckpointReader(tr)
+			svg, _, err := cr.ReadSVG(extractFrame)
+			if err != nil {
+				if err != io.EOF {
+					fmt.Fprintf(os.Stderr, "Error reading %s at frame %d: %v\n", path, cr.Position(), err)
+				} else {
+					fmt.Fprintf(os.Stderr, "Frame %d not found (max: %d).\n", extractFrame, cr.Position())
 				}
-				svg = svgd.Patch(svg, rec.Diff)
-				if current == extractFrame {
-					if output != "" {
-						if err := os.WriteFile(output, []byte(svg), 0644); err != nil {
-							fmt.Fprintf(os.Stderr, "Write error: %v\n", err)
-							os.Exit(1)
-						}
-					} else {
-						fmt.Print(svg)
-					}
-					return
-				}
-				current++
+				os.Exit(1)
 			}
 
-			fmt.Fprintf(os.Stderr, "Frame %d not found (max: %d).\n", extractFrame, current-1)
-			os.Exit(1)
+			if output != "" {
+				if err := os.WriteFile(output, []byte(svg), 0644); err != nil {
+					fmt.Fprintf(os.Stderr, "Write error: %v\n", err)
+					os.Exit(1)
+				}
+			} else {
+				fmt.Print(svg)
+			}
 		},
 	}
 )

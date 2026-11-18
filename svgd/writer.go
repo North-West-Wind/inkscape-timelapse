@@ -18,6 +18,7 @@ const (
 type Record struct {
 	Timestamp uint64
 	Diff      string
+	Length    uint32
 }
 
 type SVGDWriter struct {
@@ -38,17 +39,23 @@ func CreateSVGD(path string) (*SVGDWriter, error) {
 	return &SVGDWriter{f: f}, nil
 }
 
-func OpenSVGDAppend(path string) (*SVGDWriter, string, int, int, error) {
-	lastSVG, count, bytes, err := ReconstructSVG(path)
+func OpenSVGDAppend(path string) (*SVGDWriter, string, int, error) {
+	sr, err := OpenSVGDRead(path)
 	if err != nil {
-		return nil, "", 0, 0, fmt.Errorf("reconstruct %s: %w", path, err)
+		return nil, "", 0, fmt.Errorf("open %s: %w", path, err)
 	}
+	cr := NewCheckpointReader(sr)
+	svg, _, err := cr.ReadSVG(int(^uint(0) >> 1))
+	if err != nil && err != io.EOF {
+		return nil, "", 0, fmt.Errorf("reconstruct %s: %w", path, err)
+	}
+	sr.Close()
 
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
-		return nil, "", 0, 0, err
+		return nil, "", 0, err
 	}
-	return &SVGDWriter{f: f}, lastSVG, count, bytes, nil
+	return &SVGDWriter{f: f}, svg, cr.position, nil
 }
 
 func (tw *SVGDWriter) WriteCapture(ts uint64, diff string) error {

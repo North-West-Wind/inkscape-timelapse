@@ -2,8 +2,6 @@ package svgd
 
 import (
 	"fmt"
-	"io"
-	"os"
 	"regexp"
 	"strconv"
 )
@@ -44,29 +42,4 @@ func ResizeSVG(svg string, width, height int, par string) string {
 	reSvg := regexp.MustCompile(`(<svg[^>]*)>`)
 	svg = replaceFirst(reSvg, svg, fmt.Sprintf(`$1 preserveAspectRatio="%s">`, par))
 	return svg
-}
-
-func ReconstructSVG(path string) (lastSVG string, captures int, totalBytes int, err error) {
-	tr, err := OpenSVGDRead(path)
-	if err != nil {
-		return "", 0, 0, err
-	}
-	defer tr.Close()
-
-	var svg string
-	var rec Record
-	for {
-		err = tr.ReadRecord(&rec)
-		if err != nil {
-			if err != io.EOF {
-				fmt.Fprintf(os.Stderr, "Error reading %s at frame %d: %v\n", path, captures, err)
-			}
-			break
-		}
-
-		captures++
-		totalBytes += len(rec.Diff)
-		svg = Patch(svg, rec.Diff)
-	}
-	return svg, captures, totalBytes, nil
 }

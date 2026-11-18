@@ -10,28 +10,42 @@ import (
 )
 
 type SVGDReader struct {
-	f *os.File
+	file *os.File
+}
+
+type ResolutionChange struct {
+	FromWidth, FromHeight int
+	ToWidth, ToHeight     int
+	Frame                 int
+}
+
+type Analysis struct {
+	Frames, EmptyFrames         int
+	InitialWidth, InitialHeight int
+	MaxWidth, MaxHeight         int
+	MinWidth, MinHeight         int
+	ResolutionChanges           []ResolutionChange
 }
 
 func OpenSVGDRead(path string) (*SVGDReader, error) {
-	f, err := os.Open(path)
+	file, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
 	header := make([]byte, 4)
-	n, err := f.Read(header)
+	n, err := file.Read(header)
 	if err != nil {
 		return nil, err
 	}
-	if n < 4 || string(header) != Magic {
-		return nil, fmt.Errorf("invalid .tld magic")
+	if n < 4 || string(header) != Magic && string(header) != OldMagic {
+		return nil, fmt.Errorf("invalid .svgd magic")
 	}
-	return &SVGDReader{f: f}, nil
+	return &SVGDReader{file: file}, nil
 }
 
 func (tr *SVGDReader) ReadRecord(record *Record) error {
 	recLenB := make([]byte, 4)
-	n, err := tr.f.Read(recLenB)
+	n, err := tr.file.Read(recLenB)
 	if err != nil {
 		return err
 	}
@@ -40,7 +54,7 @@ func (tr *SVGDReader) ReadRecord(record *Record) error {
 	}
 	recLen := binary.LittleEndian.Uint32(recLenB)
 	data := make([]byte, recLen)
-	n, err = tr.f.Read(data)
+	n, err = tr.file.Read(data)
 	if err != nil {
 		return err
 	}
@@ -62,10 +76,71 @@ func (tr *SVGDReader) ReadRecord(record *Record) error {
 		return fmt.Errorf("invalid record data")
 	}
 	diff := string(raw[12 : 12+dlen])
-	*record = Record{Timestamp: ts, Diff: diff}
+	*record = Record{Timestamp: ts, Diff: diff, Length: recLen}
 	return nil
 }
 
 func (tr *SVGDReader) Close() error {
-	return tr.f.Close()
+	return tr.file.Close()
+}
+
+func (tr *SVGDReader) Analyze() Analysis {
+	var analysis Analysis
+	var svg string
+	var rec Record
+	var prevW, prevH int
+
+	analysis.ResolutionChanges = make([]ResolutionChange, 0)
+
+	for {
+		err := tr.ReadRecord(&rec)
+		if err != nil {
+			break
+		}
+		if IsNonEmpty(rec.Diff) {
+			svg = Patch(svg, rec.Diff)
+		} else {
+			analysis.EmptyFrames++
+		}
+		if analysis.Frames == 0 {
+			w, h := svgSize(svg)
+			if w > 0 && h > 0 {
+				analysis.InitialWidth, analysis.InitialHeight = w, h
+				analysis.MaxWidth, analysis.MaxHeight = w, h
+				analysis.MinWidth, analysis.MinHeight = w, h
+			}
+		} else {
+			w, h := svgSize(svg)
+			if w != prevW || h != prevH {
+				analysis.ResolutionChanges = append(analysis.ResolutionChanges, ResolutionChange{
+					FromWidth:  prevW,
+					FromHeight: prevH,
+					ToWidth:    w,
+					ToHeight:   h,
+					Frame:      analysis.Frames,
+				})
+				prevW = w
+				prevH = h
+			}
+			if w > 0 && h > 0 {
+				if w > analysis.MaxWidth {
+					analysis.MaxWidth = w
+				}
+				if h > analysis.MaxHeight {
+					analysis.MaxHeight = h
+				}
+				if w < analysis.MinWidth {
+					analysis.MinWidth = w
+				}
+				if h < analysis.MinHeight {
+					analysis.MinHeight = h
+				}
+			}
+		}
+		analysis.Frames++
+	}
+
+	// Be kind, rewind
+	tr.file.Seek(4, io.SeekStart)
+	return analysis
 }

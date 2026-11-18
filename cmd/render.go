@@ -81,10 +81,10 @@ var (
 			}
 			defer tr.Close()
 
-			ana := tr.Analyze()
-			relevantFrames := ana.Frames
+			analysis := tr.Analyze()
+			relevantFrames := analysis.Frames
 			if renderOptions.skipUnchanged {
-				relevantFrames -= ana.EmptyFrames
+				relevantFrames -= analysis.EmptyFrames
 			}
 			if relevantFrames == 0 {
 				fmt.Fprintln(os.Stderr, "No frames found.")
@@ -94,11 +94,11 @@ var (
 			if renderOptions.width <= 0 || renderOptions.height <= 0 {
 				switch renderOptions.resolutionPolicy {
 				case "max":
-					renderOptions.width, renderOptions.height = ana.MaxWidth, ana.MaxHeight
+					renderOptions.width, renderOptions.height = analysis.MaxWidth, analysis.MaxHeight
 				case "min":
-					renderOptions.width, renderOptions.height = ana.MinWidth, ana.MinHeight
+					renderOptions.width, renderOptions.height = analysis.MinWidth, analysis.MinHeight
 				default:
-					renderOptions.width, renderOptions.height = ana.InitialWidth, ana.InitialHeight
+					renderOptions.width, renderOptions.height = analysis.InitialWidth, analysis.InitialHeight
 				}
 			}
 
@@ -289,15 +289,13 @@ func renderToFFmpeg(tr *svgd.SVGDReader, stdin io.WriteCloser, paused *bool) int
 	go func() {
 		defer close(jobs)
 		num := 0
-		svg := ""
-		var rec svgd.Record
+		cr := svgd.NewCheckpointReader(tr)
 		for {
-			err := tr.ReadRecord(&rec)
+			svg, diff, err := cr.ReadSVG(num)
 			if err != nil {
 				break
 			}
-			svg = svgd.Patch(svg, rec.Diff)
-			if !svgd.IsNonEmpty(rec.Diff) && skipUnchanged {
+			if !svgd.IsNonEmpty(diff) && skipUnchanged {
 				continue
 			}
 			jobs <- frameJob{num: num, svg: svg}

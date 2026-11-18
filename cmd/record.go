@@ -18,10 +18,10 @@ import (
 const (
 	dbusDest = "org.inkscape.Inkscape"
 	dbusPath = "/org/inkscape/Inkscape"
-	tlAttr   = "data-tlid"
+	svgdAttr = "data-svgdid"
 )
 
-var tlAttrRE = regexp.MustCompile(`\s+data-tlid="[^"]*"`)
+var svgdAttrRE = regexp.MustCompile(`\s+data-svgdid="[^"]*"`)
 
 var (
 	interval      float64
@@ -59,7 +59,7 @@ var (
 				os.Exit(1)
 			}
 
-			marker := fmt.Sprintf(`%s="%s"`, tlAttr, tlid)
+			marker := fmt.Sprintf(`%s="%s"`, svgdAttr, tlid)
 			if !strings.Contains(svgRaw, marker) {
 				fmt.Fprintln(os.Stderr, "Recording marker not found in exported SVG. Wrong window?")
 				os.Exit(1)
@@ -67,19 +67,16 @@ var (
 
 			var tw *svgd.SVGDWriter
 			lastSVG := ""
-			totalBytes := 0
+			totalCaptures := 0
 
 			if append {
-				var captures int
-				var prevBytes int
 				var err error
-				tw, lastSVG, captures, prevBytes, err = svgd.OpenSVGDAppend(output)
+				tw, lastSVG, totalCaptures, err = svgd.OpenSVGDAppend(output)
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "Failed to open recording for append: %v\n", err)
 					os.Exit(1)
 				}
-				totalBytes = prevBytes
-				fmt.Printf("Appending to %s (%d existing captures)\n", output, captures)
+				fmt.Printf("Appending to %s (%d existing captures)\n", output, totalCaptures)
 			} else {
 				var err error
 				tw, err = svgd.CreateSVGD(output)
@@ -122,7 +119,7 @@ var (
 				}
 
 				tStart := time.Now()
-				captureTick(conn, tw, tlid, &lastSVG, &lastChangeUnix, &totalBytes, &curInterval)
+				captureTick(conn, tw, tlid, &lastSVG, &lastChangeUnix, &totalCaptures, &curInterval)
 				elapsed := time.Since(tStart)
 
 				if sleep := curInterval - elapsed; sleep > 0 {
@@ -188,7 +185,7 @@ func injectMarker(conn *dbus.Conn, tlid string) bool {
 	}{
 		{"selection-set-backup", nil},
 		{"select-all", []dbus.Variant{dbus.MakeVariant("all")}},
-		{"object-set-attribute", []dbus.Variant{dbus.MakeVariant(tlAttr + "," + tlid)}},
+		{"object-set-attribute", []dbus.Variant{dbus.MakeVariant(svgdAttr + "," + tlid)}},
 		{"selection-restore-backup", nil},
 	} {
 		if err := activate(conn, step.action, step.param); err != nil {
@@ -212,7 +209,7 @@ func stripMarker(conn *dbus.Conn) {
 	}{
 		{"selection-set-backup", nil},
 		{"select-all", []dbus.Variant{dbus.MakeVariant("all")}},
-		{"object-remove-attribute", []dbus.Variant{dbus.MakeVariant(tlAttr)}},
+		{"object-remove-attribute", []dbus.Variant{dbus.MakeVariant(svgdAttr)}},
 		{"selection-restore-backup", nil},
 	} {
 		if err := activate(conn, step.action, step.param); err != nil {
@@ -253,13 +250,13 @@ func checkWindowCount(conn *dbus.Conn) int {
 	return count
 }
 
-func captureTick(conn *dbus.Conn, tw *svgd.SVGDWriter, tlid string, lastSVG *string, lastChangeUnix *int64, totalBytes *int, curInterval *time.Duration) {
+func captureTick(conn *dbus.Conn, tw *svgd.SVGDWriter, tlid string, lastSVG *string, lastChangeUnix *int64, totalCaptures *int, curInterval *time.Duration) {
 	svgRaw, err := captureSVG(conn)
 	if err != nil || svgRaw == "" {
 		return
 	}
 
-	marker := fmt.Sprintf(`%s="%s"`, tlAttr, tlid)
+	marker := fmt.Sprintf(`%s="%s"`, svgdAttr, tlid)
 	if !strings.Contains(svgRaw, marker) {
 		// Non-recording window focused: widen interval to reduce crash risk
 		if *curInterval < time.Second {
@@ -271,7 +268,7 @@ func captureTick(conn *dbus.Conn, tw *svgd.SVGDWriter, tlid string, lastSVG *str
 		}
 		ts := uint64(time.Now().UnixMilli())
 		tw.WriteCapture(ts, "")
-		printStatus(ts, *lastChangeUnix, *totalBytes)
+		printStatus(ts, *lastChangeUnix, *totalCaptures)
 		return
 	}
 
@@ -296,28 +293,26 @@ func captureTick(conn *dbus.Conn, tw *svgd.SVGDWriter, tlid string, lastSVG *str
 		fmt.Fprintf(os.Stderr, "\nWrite capture failed: %v\n", err)
 		return
 	}
-	*totalBytes += len(diffText)
+	*totalCaptures += len(diffText)
 	if svgd.IsNonEmpty(diffText) {
 		*lastChangeUnix = int64(ts)
 		*lastSVG = svgStr
 	}
-	printStatus(ts, *lastChangeUnix, *totalBytes)
+	printStatus(ts, *lastChangeUnix, *totalCaptures)
 }
 
-func printStatus(ts uint64, lastChangeUnix int64, totalBytes int) {
+func printStatus(ts uint64, lastChangeUnix int64, totalCaptures int) {
 	t := time.UnixMilli(int64(ts))
 	if lastChangeUnix > 0 {
 		delta := time.Since(time.UnixMilli(lastChangeUnix))
-		fmt.Printf("\r[%s] last change: %+.1fs  %d bytes  ",
-			t.Format("15:04:05.000"), delta.Seconds(), totalBytes)
+		fmt.Printf("\r[%s] last change: %+.1fs  %d frames  ",
+			t.Format("15:04:05.000"), delta.Seconds(), totalCaptures)
 	} else {
-		fmt.Printf("\r[%s] no changes yet  %d bytes  ",
-			t.Format("15:04:05.000"), totalBytes)
+		fmt.Printf("\r[%s] no changes yet  %d frames  ",
+			t.Format("15:04:05.000"), totalCaptures)
 	}
 }
 
-// ── Helpers ───────────────────────────────────────────────────────
-
 func cleanSVG(svgText string) string {
-	return tlAttrRE.ReplaceAllString(svgText, "")
+	return svgdAttrRE.ReplaceAllString(svgText, "")
 }
